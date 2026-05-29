@@ -63,8 +63,8 @@ export const giveawayStartCommand = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub.setName("list").setDescription("List active giveaways in this channel"),
   )
-  .setIntegrationTypes([0, 1]) // Guild + User install
-  .setContexts([0, 1, 2]);    // Guild, BotDM, PrivateChannel (group DMs)
+  .setIntegrationTypes([0, 1])
+  .setContexts([0, 1, 2]);
 
 // ─── /giveaway start ──────────────────────────────────────────────────────
 
@@ -79,6 +79,7 @@ export async function handleGiveawayStart(
 
   const totalMinutes = hours * 60 + minutes;
   if (totalMinutes <= 0) {
+    // Validation only — safe to reply directly (no DB needed)
     await interaction.reply({
       content: "Please specify a duration using `hours` and/or `minutes` (total must be > 0).",
       flags: MessageFlags.Ephemeral,
@@ -86,38 +87,29 @@ export async function handleGiveawayStart(
     return;
   }
 
+  // Acknowledge immediately — Discord requires a response within 3 seconds
+  await interaction.deferReply();
+
   const endsAt = new Date(Date.now() + totalMinutes * 60 * 1000);
   const channelId = interaction.channelId;
   const guildId = interaction.guildId ?? null;
 
   const [giveaway] = await db
     .insert(giveawaysTable)
-    .values({
-      channelId,
-      guildId,
-      hostUserId: interaction.user.id,
-      prize,
-      winnersCount,
-      endsAt,
-    })
+    .values({ channelId, guildId, hostUserId: interaction.user.id, prize, winnersCount, endsAt })
     .returning();
 
   const embed = buildGiveawayEmbed(prize, endsAt, 0, false);
   const row = buildEnterButton(false);
 
-  const reply = await interaction.reply({
-    embeds: [embed],
-    components: [row],
-    fetchReply: true,
-  });
+  // editReply gives us back the message so we can store its ID
+  const reply = await interaction.editReply({ embeds: [embed], components: [row] });
 
-  // Store the message ID so we can update it later
   await db
     .update(giveawaysTable)
     .set({ messageId: reply.id })
     .where(eq(giveawaysTable.id, giveaway.id));
 
-  // Schedule auto-end
   const msUntilEnd = endsAt.getTime() - Date.now();
   setTimeout(() => {
     endGiveaway(client, giveaway.id).catch((err) =>
@@ -125,10 +117,7 @@ export async function handleGiveawayStart(
     );
   }, msUntilEnd);
 
-  logger.info(
-    { giveawayId: giveaway.id, prize, endsAt, channelId },
-    "Giveaway started",
-  );
+  logger.info({ giveawayId: giveaway.id, prize, endsAt, channelId }, "Giveaway started");
 }
 
 // ─── /giveaway end ────────────────────────────────────────────────────────
@@ -137,6 +126,9 @@ export async function handleGiveawayEnd(
   interaction: ChatInputCommandInteraction,
   client: Client,
 ) {
+  // Defer immediately before any DB work
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const id = interaction.options.getInteger("id", true);
 
   const [giveaway] = await db
@@ -145,24 +137,20 @@ export async function handleGiveawayEnd(
     .where(eq(giveawaysTable.id, id));
 
   if (!giveaway) {
-    await interaction.reply({ content: `No giveaway found with ID **${id}**.`, flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: `No giveaway found with ID **${id}**.` });
     return;
   }
-
   if (giveaway.ended) {
-    await interaction.reply({ content: `Giveaway **${id}** has already ended.`, flags: MessageFlags.Ephemeral });
+    await interaction.editReply({ content: `Giveaway **${id}** has already ended.` });
     return;
   }
-
   if (giveaway.hostUserId !== interaction.user.id) {
-    await interaction.reply({
+    await interaction.editReply({
       content: "Only the person who started this giveaway can end it early.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   await endGiveaway(client, id);
   await interaction.editReply({ content: `Giveaway **${id}** has been ended.` });
 }
@@ -170,21 +158,18 @@ export async function handleGiveawayEnd(
 // ─── /giveaway list ───────────────────────────────────────────────────────
 
 export async function handleGiveawayList(interaction: ChatInputCommandInteraction) {
+  // Defer immediately before DB query
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const active = await db
     .select()
     .from(giveawaysTable)
     .where(
-      and(
-        eq(giveawaysTable.channelId, interaction.channelId),
-        eq(giveawaysTable.ended, false),
-      ),
+      and(eq(giveawaysTable.channelId, interaction.channelId), eq(giveawaysTable.ended, false)),
     );
 
   if (active.length === 0) {
-    await interaction.reply({
-      content: "No active giveaways in this channel.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await interaction.editReply({ content: "No active giveaways in this channel." });
     return;
   }
 
@@ -200,67 +185,26 @@ export async function handleGiveawayList(interaction: ChatInputCommandInteractio
         .join("\n\n"),
     );
 
-  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  await interaction.editReply({ embeds: [embed] });
 }
 
 // ─── Enter button click ───────────────────────────────────────────────────
+// IMPORTANT: Must call showModal() within 3 seconds — do NOT query the DB first.
+// All validation is deferred to the modal submit handler which can deferReply().
 
 export async function handleEnterButton(interaction: ButtonInteraction) {
-  // Find the active giveaway tied to this message
-  const [giveaway] = await db
-    .select()
-    .from(giveawaysTable)
-    .where(
-      and(
-        eq(giveawaysTable.messageId, interaction.message.id),
-        eq(giveawaysTable.ended, false),
-      ),
-    );
-
-  if (!giveaway) {
-    await interaction.reply({
-      content: "This giveaway has already ended or could not be found.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  if (giveaway.endsAt <= new Date()) {
-    await interaction.reply({
-      content: "This giveaway has expired.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  // Check if already entered
-  const [existing] = await db
-    .select()
-    .from(giveawayEntriesTable)
-    .where(
-      and(
-        eq(giveawayEntriesTable.giveawayId, giveaway.id),
-        eq(giveawayEntriesTable.userId, interaction.user.id),
-      ),
-    );
-
-  if (existing) {
-    await interaction.reply({
-      content: `You're already entered in this giveaway! Your Steam ID on file: \`${existing.steamId}\``,
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  // Show modal for Steam profile URL
+  // Show modal immediately — attach the message ID so the modal handler
+  // can look up the giveaway without needing any info up front.
   const modal = new ModalBuilder()
-    .setCustomId(`steam_modal_${giveaway.id}`)
+    .setCustomId(`steam_modal_${interaction.message.id}`)
     .setTitle("Enter Giveaway — Steam Verification");
 
   const steamInput = new TextInputBuilder()
     .setCustomId("steam_url")
     .setLabel("Your Steam Profile URL")
-    .setPlaceholder("https://steamcommunity.com/id/yourusername  or  /profiles/76561198...")
+    .setPlaceholder(
+      "https://steamcommunity.com/id/yourusername  or  /profiles/76561198...",
+    )
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMinLength(20)
@@ -273,15 +217,50 @@ export async function handleEnterButton(interaction: ButtonInteraction) {
 // ─── Modal submit (Steam URL) ──────────────────────────────────────────────
 
 export async function handleSteamModal(interaction: ModalSubmitInteraction, client: Client) {
-  const match = interaction.customId.match(/^steam_modal_(\d+)$/);
+  // customId is `steam_modal_<messageId>` — look up giveaway by message ID
+  const match = interaction.customId.match(/^steam_modal_(.+)$/);
   if (!match) return;
-  const giveawayId = parseInt(match[1], 10);
+  const messageId = match[1];
 
+  // Defer immediately — Steam API calls can take a moment
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  // ── 1. Find the giveaway by message ID ────────────────────────────
+  const [giveaway] = await db
+    .select()
+    .from(giveawaysTable)
+    .where(and(eq(giveawaysTable.messageId, messageId), eq(giveawaysTable.ended, false)));
+
+  if (!giveaway) {
+    await interaction.editReply({ content: "❌ This giveaway has already ended or could not be found." });
+    return;
+  }
+  if (giveaway.endsAt <= new Date()) {
+    await interaction.editReply({ content: "❌ This giveaway has expired." });
+    return;
+  }
+
+  // ── 2. Check if already entered ───────────────────────────────────
+  const [existing] = await db
+    .select()
+    .from(giveawayEntriesTable)
+    .where(
+      and(
+        eq(giveawayEntriesTable.giveawayId, giveaway.id),
+        eq(giveawayEntriesTable.userId, interaction.user.id),
+      ),
+    );
+
+  if (existing) {
+    await interaction.editReply({
+      content: `You're already entered! Your Steam ID on file: \`${existing.steamId}\``,
+    });
+    return;
+  }
 
   const rawUrl = interaction.fields.getTextInputValue("steam_url").trim();
 
-  // ── 1. Resolve Steam ID ────────────────────────────────────────────
+  // ── 3. Resolve Steam ID ───────────────────────────────────────────
   const steamId = await resolveSteamId(rawUrl);
   if (!steamId) {
     await interaction.editReply({
@@ -293,7 +272,7 @@ export async function handleSteamModal(interaction: ModalSubmitInteraction, clie
     return;
   }
 
-  // ── 2. Check 30-day activity ───────────────────────────────────────
+  // ── 4. Check 30-day activity ──────────────────────────────────────
   await interaction.editReply({ content: "🔍 Checking your Steam activity…" });
 
   const activity = await hasPlayedGameInLastMonth(steamId);
@@ -302,9 +281,8 @@ export async function handleSteamModal(interaction: ModalSubmitInteraction, clie
     await interaction.editReply({
       content:
         "❌ **Your Steam game library is set to private.**\n" +
-        "Please make it public so we can verify your activity:\n" +
-        "Steam → Profile → Edit Profile → Privacy Settings → Game Details → **Public**\n\n" +
-        "Then try entering again.",
+        "Please set it to public, then try again:\n" +
+        "**Steam → Profile → Edit Profile → Privacy Settings → Game Details → Public**",
     });
     return;
   }
@@ -313,53 +291,26 @@ export async function handleSteamModal(interaction: ModalSubmitInteraction, clie
     await interaction.editReply({
       content:
         `❌ **You haven't played any games on Steam in the last 30 days.**\n` +
-        `To qualify, you must have at least one gaming session in the past month.\n\n` +
-        `_(Reason: ${activity.reason})_`,
+        `You must have at least one gaming session in the past month to qualify.\n\n` +
+        `_(${activity.reason})_`,
     });
-    return;
-  }
-
-  // ── 3. Double-check giveaway still open ───────────────────────────
-  const [giveaway] = await db
-    .select()
-    .from(giveawaysTable)
-    .where(eq(giveawaysTable.id, giveawayId));
-
-  if (!giveaway || giveaway.ended || giveaway.endsAt <= new Date()) {
-    await interaction.editReply({ content: "❌ This giveaway has already ended." });
-    return;
-  }
-
-  // ── 4. Check not already entered (race-condition guard) ───────────
-  const [alreadyEntered] = await db
-    .select()
-    .from(giveawayEntriesTable)
-    .where(
-      and(
-        eq(giveawayEntriesTable.giveawayId, giveawayId),
-        eq(giveawayEntriesTable.userId, interaction.user.id),
-      ),
-    );
-
-  if (alreadyEntered) {
-    await interaction.editReply({ content: "You're already entered in this giveaway!" });
     return;
   }
 
   // ── 5. Record entry ───────────────────────────────────────────────
   await db.insert(giveawayEntriesTable).values({
-    giveawayId,
+    giveawayId: giveaway.id,
     userId: interaction.user.id,
     username: interaction.user.username,
     steamProfileUrl: rawUrl,
     steamId,
   });
 
-  // ── 6. Update the giveaway embed with new entry count ─────────────
+  // ── 6. Update embed entry count ───────────────────────────────────
   const [{ value: totalEntries }] = await db
     .select({ value: count() })
     .from(giveawayEntriesTable)
-    .where(eq(giveawayEntriesTable.giveawayId, giveawayId));
+    .where(eq(giveawayEntriesTable.giveawayId, giveaway.id));
 
   try {
     if (giveaway.messageId) {
@@ -374,7 +325,7 @@ export async function handleSteamModal(interaction: ModalSubmitInteraction, clie
     logger.warn({ err }, "Could not update giveaway embed entry count");
   }
 
-  // ── 7. Fetch Steam display name for nice confirmation ─────────────
+  // ── 7. Confirm entry ──────────────────────────────────────────────
   const profile = await getSteamProfile(steamId);
   const steamName = profile?.name ?? steamId;
 
@@ -387,7 +338,7 @@ export async function handleSteamModal(interaction: ModalSubmitInteraction, clie
   });
 
   logger.info(
-    { giveawayId, userId: interaction.user.id, steamId, reason: activity.reason },
+    { giveawayId: giveaway.id, userId: interaction.user.id, steamId, reason: activity.reason },
     "New giveaway entry",
   );
 }
