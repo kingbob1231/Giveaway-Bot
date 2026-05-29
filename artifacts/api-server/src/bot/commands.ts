@@ -88,7 +88,9 @@ export async function handleGiveawayStart(
   }
 
   // Acknowledge immediately — Discord requires a response within 3 seconds
+  logger.info({ prize, totalMinutes, winnersCount }, "Deferring giveaway start reply");
   await interaction.deferReply();
+  logger.info("Deferred — running DB insert");
 
   const endsAt = new Date(Date.now() + totalMinutes * 60 * 1000);
   const channelId = interaction.channelId;
@@ -98,12 +100,14 @@ export async function handleGiveawayStart(
     .insert(giveawaysTable)
     .values({ channelId, guildId, hostUserId: interaction.user.id, prize, winnersCount, endsAt })
     .returning();
+  logger.info({ giveawayId: giveaway.id }, "DB insert done — sending embed");
 
   const embed = buildGiveawayEmbed(prize, endsAt, 0, false);
   const row = buildEnterButton(false);
 
   // editReply gives us back the message so we can store its ID
   const reply = await interaction.editReply({ embeds: [embed], components: [row] });
+  logger.info({ messageId: reply.id }, "editReply done — storing message ID");
 
   await db
     .update(giveawaysTable)
