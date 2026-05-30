@@ -2,7 +2,7 @@ import { EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from "disc
 import { db } from "@workspace/db";
 import { giveawaysTable, giveawayEntriesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { editInteractionResponse, sendInteractionFollowup } from "./discordRest";
+import { editInteractionResponse, editMessage, sendMessage, sendInteractionFollowup, dmUser } from "./discordRest";
 import { logger } from "./logger";
 
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID ?? "";
@@ -69,28 +69,41 @@ function isTokenStillValid(giveawayCreatedAt: Date): boolean {
 }
 
 /**
- * Try to edit the original giveaway embed via the interaction webhook.
- * Falls back silently if the token has expired (>15 min old giveaway).
+ * Try to edit the original giveaway embed.
+ * Prefers the bot-token direct edit (channelId + messageId, no expiry).
+ * Falls back to the interaction webhook token if messageId is not yet stored
+ * (i.e. within the first few seconds after the giveaway is created).
  */
 export async function tryUpdateGiveawayEmbed(
-  giveaway: { id: number; prize: string; endsAt: Date; createdAt: Date; interactionToken: string | null; messageId: string | null },
+  giveaway: { id: number; prize: string; endsAt: Date; createdAt: Date; channelId: string; interactionToken: string | null; messageId: string | null; imageUrl?: string | null },
   entryCount: number,
   ended: boolean,
   winners: string[] = [],
 ) {
-  if (!giveaway.interactionToken) return;
-  if (!isTokenStillValid(giveaway.createdAt)) return;
-
   const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entryCount, ended, winners, giveaway.id, giveaway.imageUrl);
   const row = buildEnterButtonRow(ended);
 
-  try {
-    await editInteractionResponse(APPLICATION_ID, giveaway.interactionToken, {
-      embeds: [embed],
-      components: [row],
-    });
-  } catch (err) {
-    logger.warn({ err, giveawayId: giveaway.id }, "Could not update giveaway embed (token may have expired)");
+  if (giveaway.channelId && giveaway.messageId) {
+    try {
+      await editMessage(giveaway.channelId, giveaway.messageId, {
+        embeds: [embed],
+        components: [row],
+      });
+      return;
+    } catch (err) {
+      logger.warn({ err, giveawayId: giveaway.id }, "Could not update giveaway embed via bot token");
+    }
+  }
+
+  if (giveaway.interactionToken && isTokenStillValid(giveaway.createdAt)) {
+    try {
+      await editInteractionResponse(APPLICATION_ID, giveaway.interactionToken, {
+        embeds: [embed],
+        components: [row],
+      });
+    } catch (err) {
+      logger.warn({ err, giveawayId: giveaway.id }, "Could not update giveaway embed via interaction token");
+    }
   }
 }
 
@@ -122,31 +135,43 @@ export async function endGiveaway(giveawayId: number) {
 
   logger.info({ giveawayId, entryCount: entries.length, winners }, "Giveaway ended");
 
-  if (!giveaway.interactionToken) {
-    logger.warn({ giveawayId }, "No interaction token stored — cannot post result");
-    return;
-  }
-
-  const tokenValid = isTokenStillValid(giveaway.createdAt);
-
   const announcement =
     winners.length > 0
       ? `🎉 Congratulations ${winners.map((id) => `<@${id}>`).join(", ")}! You won **${giveaway.prize}**!`
       : `The giveaway for **${giveaway.prize}** ended with no valid entries.`;
 
-  if (!tokenValid) {
-    // Interaction token has expired (giveaway lasted > 15 min) — Discord limitation for User Apps.
-    // Winners are saved in the DB; the host can retrieve them with /giveaway result <id>.
-    logger.info(
-      { giveawayId, winners },
-      "Giveaway ended — token expired, results saved to DB. Host should run /giveaway result to see winners.",
-    );
+  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners, giveaway.id, giveaway.imageUrl);
+  const row = buildEnterButtonRow(true);
+
+  // Prefer direct bot-token edit (works regardless of how long the giveaway ran)
+  if (giveaway.channelId && giveaway.messageId) {
+    try {
+      await editMessage(giveaway.channelId, giveaway.messageId, {
+        embeds: [embed],
+        components: [row],
+      });
+    } catch (err) {
+      logger.warn({ err, giveawayId }, "Could not update giveaway embed via bot token on end");
+    }
+
+    try {
+      await sendMessage(giveaway.channelId, { content: announcement });
+    } catch (err) {
+      logger.warn({ err, giveawayId }, "Could not send winner announcement — trying DM fallback");
+      try {
+        await dmUser(giveaway.hostUserId, `⏰ Your giveaway **${giveaway.prize}** ended!\n${announcement}`);
+      } catch (dmErr) {
+        logger.error({ dmErr, giveawayId }, "DM fallback also failed");
+      }
+    }
     return;
   }
 
-  // Token still valid — update the embed and post the announcement in-channel
-  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners, giveaway.id, giveaway.imageUrl);
-  const row = buildEnterButtonRow(true);
+  // Fallback: interaction token (only works within 15 min of giveaway creation)
+  if (!giveaway.interactionToken || !isTokenStillValid(giveaway.createdAt)) {
+    logger.info({ giveawayId, winners }, "Giveaway ended — no channel/message ID and token expired. Results saved to DB.");
+    return;
+  }
 
   try {
     await editInteractionResponse(APPLICATION_ID, giveaway.interactionToken, {
@@ -154,13 +179,11 @@ export async function endGiveaway(giveawayId: number) {
       components: [row],
     });
   } catch (err) {
-    logger.warn({ err, giveawayId }, "Could not update giveaway embed on end");
+    logger.warn({ err, giveawayId }, "Could not update giveaway embed via interaction token on end");
   }
 
   try {
-    await sendInteractionFollowup(APPLICATION_ID, giveaway.interactionToken, {
-      content: announcement,
-    });
+    await sendInteractionFollowup(APPLICATION_ID, giveaway.interactionToken, { content: announcement });
   } catch (err) {
     logger.warn({ err, giveawayId }, "Could not send winner announcement followup — trying DM fallback");
     try {
