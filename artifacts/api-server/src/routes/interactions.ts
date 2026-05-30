@@ -124,8 +124,7 @@ router.post("/interactions", (req, res) => {
 
 function handleCommand(interaction: any, res: any) {
   const commandName: string = interaction.data?.name ?? "";
-  const _s = interaction.data?.options?.[0];
-  logger.info({ commandName, sub: _s?.name, subType: _s?.type }, "CMD dispatch");
+  logger.info({ data: JSON.stringify(interaction.data) }, "CMD dispatch raw");
 
   // /fragment — top-level command (no subcommands)
   if (commandName === "fragment") {
