@@ -7,6 +7,7 @@ export const giveawaysTable = pgTable("giveaways", {
   guildId: text("guild_id"),
   channelId: text("channel_id").notNull(),
   messageId: text("message_id"),
+  interactionToken: text("interaction_token"),
   hostUserId: text("host_user_id").notNull(),
   prize: text("prize").notNull(),
   winnersCount: integer("winners_count").notNull().default(1),

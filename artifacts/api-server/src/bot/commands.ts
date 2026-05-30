@@ -14,7 +14,7 @@ import { db } from "@workspace/db";
 import { giveawaysTable, giveawayEntriesTable } from "@workspace/db";
 import { eq, and, count } from "drizzle-orm";
 import { resolveSteamId, hasPlayedGameInLastMonth, getSteamProfile } from "../lib/steam";
-import { buildGiveawayEmbed, buildEnterButton, endGiveaway } from "../lib/giveawayManager";
+import { buildGiveawayEmbed, buildEnterButtonRow, endGiveaway } from "../lib/giveawayManager";
 import { logger } from "../lib/logger";
 import type { Client } from "discord.js";
 
@@ -32,15 +32,22 @@ export const giveawayStartCommand = new SlashCommandBuilder()
       )
       .addIntegerOption((opt) =>
         opt
-          .setName("hours")
-          .setDescription("Duration in hours (combined with minutes)")
+          .setName("days")
+          .setDescription("Duration in days")
           .setMinValue(0)
-          .setMaxValue(720),
+          .setMaxValue(30),
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName("hours")
+          .setDescription("Duration in hours (combined with days/minutes)")
+          .setMinValue(0)
+          .setMaxValue(23),
       )
       .addIntegerOption((opt) =>
         opt
           .setName("minutes")
-          .setDescription("Duration in minutes (combined with hours)")
+          .setDescription("Duration in minutes (combined with days/hours)")
           .setMinValue(0)
           .setMaxValue(59),
       )

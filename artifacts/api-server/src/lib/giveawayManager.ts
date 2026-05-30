@@ -2,8 +2,12 @@ import { EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from "disc
 import { db } from "@workspace/db";
 import { giveawaysTable, giveawayEntriesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { editMessage, sendMessage } from "./discordRest";
+import { editInteractionResponse, sendInteractionFollowup, dmUser } from "./discordRest";
 import { logger } from "./logger";
+
+const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID ?? "";
+// Interaction webhook tokens are valid for 15 minutes
+const WEBHOOK_TOKEN_TTL_MS = 14 * 60 * 1000;
 
 export function buildGiveawayEmbed(
   prize: string,
@@ -48,8 +52,40 @@ export function buildEnterButtonRow(disabled = false) {
     .setLabel(disabled ? "Giveaway Ended" : "Enter Giveaway")
     .setStyle(disabled ? ButtonStyle.Secondary : ButtonStyle.Success)
     .setDisabled(disabled);
-
   return new ActionRowBuilder<ButtonBuilder>().addComponents(btn).toJSON();
+}
+
+/**
+ * Returns true if the interaction token is still within the 15-minute window.
+ */
+function isTokenStillValid(giveawayCreatedAt: Date): boolean {
+  return Date.now() - giveawayCreatedAt.getTime() < WEBHOOK_TOKEN_TTL_MS;
+}
+
+/**
+ * Try to edit the original giveaway embed via the interaction webhook.
+ * Falls back silently if the token has expired (>15 min old giveaway).
+ */
+export async function tryUpdateGiveawayEmbed(
+  giveaway: { id: number; prize: string; endsAt: Date; createdAt: Date; interactionToken: string | null; messageId: string | null },
+  entryCount: number,
+  ended: boolean,
+  winners: string[] = [],
+) {
+  if (!giveaway.interactionToken) return;
+  if (!isTokenStillValid(giveaway.createdAt)) return;
+
+  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entryCount, ended, winners);
+  const row = buildEnterButtonRow(ended);
+
+  try {
+    await editInteractionResponse(APPLICATION_ID, giveaway.interactionToken, {
+      embeds: [embed],
+      components: [row],
+    });
+  } catch (err) {
+    logger.warn({ err, giveawayId: giveaway.id }, "Could not update giveaway embed (token may have expired)");
+  }
 }
 
 export async function endGiveaway(giveawayId: number) {
@@ -78,24 +114,62 @@ export async function endGiveaway(giveawayId: number) {
     .set({ ended: true, winnerUserIds: winners })
     .where(eq(giveawaysTable.id, giveawayId));
 
-  if (!giveaway.messageId) return;
+  logger.info({ giveawayId, entryCount: entries.length, winners }, "Giveaway ended");
+
+  if (!giveaway.interactionToken) {
+    logger.warn({ giveawayId }, "No interaction token stored — cannot post result");
+    return;
+  }
+
+  const tokenValid = isTokenStillValid(giveaway.createdAt);
+
+  const announcement =
+    winners.length > 0
+      ? `🎉 Congratulations ${winners.map((id) => `<@${id}>`).join(", ")}! You won **${giveaway.prize}**!`
+      : `The giveaway for **${giveaway.prize}** ended with no valid entries.`;
+
+  if (!tokenValid) {
+    // Token expired — DM the host so they always know who won
+    logger.warn({ giveawayId }, "Interaction token expired — DMing host with result");
+    const winnerText =
+      winners.length > 0
+        ? `Winners: ${winners.map((id) => `<@${id}>`).join(", ")}`
+        : "No valid entries were received.";
+    try {
+      await dmUser(
+        giveaway.hostUserId,
+        `⏰ Your giveaway **${giveaway.prize}** has ended!\n${winnerText}\n\n` +
+          `_(The in-channel announcement couldn't be posted because the giveaway ran longer than 15 minutes — a Discord limitation for User Apps.)_`,
+      );
+    } catch (err) {
+      logger.error({ err, giveawayId }, "Could not DM host with winner result");
+    }
+    return;
+  }
+
+  // Token still valid — update the embed and post the announcement in-channel
+  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners);
+  const row = buildEnterButtonRow(true);
 
   try {
-    const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners);
-    const row = buildEnterButtonRow(true);
-
-    await editMessage(giveaway.channelId, giveaway.messageId, {
+    await editInteractionResponse(APPLICATION_ID, giveaway.interactionToken, {
       embeds: [embed],
       components: [row],
     });
-
-    const announcement =
-      winners.length > 0
-        ? `🎉 Congratulations ${winners.map((id) => `<@${id}>`).join(", ")}! You won **${giveaway.prize}**!`
-        : `The giveaway for **${giveaway.prize}** ended with no valid entries.`;
-
-    await sendMessage(giveaway.channelId, { content: announcement });
   } catch (err) {
-    logger.error({ err, giveawayId }, "Failed to update giveaway message on end");
+    logger.warn({ err, giveawayId }, "Could not update giveaway embed on end");
+  }
+
+  try {
+    await sendInteractionFollowup(APPLICATION_ID, giveaway.interactionToken, {
+      content: announcement,
+    });
+  } catch (err) {
+    logger.warn({ err, giveawayId }, "Could not send winner announcement followup — trying DM fallback");
+    try {
+      await dmUser(giveaway.hostUserId, `⏰ Your giveaway **${giveaway.prize}** ended!\n${announcement}`);
+    } catch (dmErr) {
+      logger.error({ dmErr, giveawayId }, "DM fallback also failed");
+    }
   }
 }

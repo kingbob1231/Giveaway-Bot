@@ -8,11 +8,11 @@ import {
   buildGiveawayEmbed,
   buildEnterButtonRow,
   endGiveaway,
+  tryUpdateGiveawayEmbed,
 } from "../lib/giveawayManager";
 import {
   editInteractionResponse,
   sendInteractionFollowup,
-  editMessage,
 } from "../lib/discordRest";
 import { logger } from "../lib/logger";
 
@@ -165,10 +165,11 @@ async function handleGiveawayStart(interaction: any, options: any[]) {
   const user = getUser(interaction);
 
   const prize: string = getOptionValue(options, "prize") ?? "Prize";
+  const days: number = getOptionValue(options, "days") ?? 0;
   const hours: number = getOptionValue(options, "hours") ?? 0;
   const minutes: number = getOptionValue(options, "minutes") ?? 0;
   const winnersCount: number = getOptionValue(options, "winners") ?? 1;
-  const totalMinutes = hours * 60 + minutes;
+  const totalMinutes = days * 24 * 60 + hours * 60 + minutes;
 
   if (totalMinutes <= 0) {
     await replyEphemeral(token, "Please specify a duration using `hours` and/or `minutes` (total must be > 0).");
@@ -179,7 +180,7 @@ async function handleGiveawayStart(interaction: any, options: any[]) {
 
   const [giveaway] = await db
     .insert(giveawaysTable)
-    .values({ channelId, guildId, hostUserId: user.id, prize, winnersCount, endsAt })
+    .values({ channelId, guildId, hostUserId: user.id, prize, winnersCount, endsAt, interactionToken: token })
     .returning();
 
   logger.info({ giveawayId: giveaway.id, prize, endsAt }, "Giveaway created — posting embed");
@@ -415,18 +416,7 @@ async function handleSteamModal(interaction: any) {
     .from(giveawayEntriesTable)
     .where(eq(giveawayEntriesTable.giveawayId, giveaway.id));
 
-  try {
-    if (giveaway.messageId) {
-      const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, totalEntries, false);
-      const row = buildEnterButtonRow(false);
-      await editMessage(giveaway.channelId, giveaway.messageId, {
-        embeds: [embed],
-        components: [row],
-      });
-    }
-  } catch (err) {
-    logger.warn({ err }, "Could not update giveaway embed entry count");
-  }
+  await tryUpdateGiveawayEmbed(giveaway, totalEntries, false);
 
   // ── 8. Confirm to user ────────────────────────────────────────────
   const profile = await getSteamProfile(steamId);

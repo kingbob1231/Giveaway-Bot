@@ -61,3 +61,23 @@ export async function sendInteractionFollowup(
     { headers: { "Content-Type": "application/json" } },
   );
 }
+
+/**
+ * Open a DM channel with a user and send them a message.
+ * Used as a fallback when the interaction webhook has expired (> 15 min giveaways).
+ */
+export async function dmUser(userId: string, content: string): Promise<void> {
+  // Create or fetch the DM channel
+  const dmRes = await axios.post(
+    `${BASE}/users/@me/channels`,
+    { recipient_id: userId },
+    { headers: botHeaders() },
+  );
+  const dmChannelId: string = dmRes.data.id;
+
+  await axios.post(
+    `${BASE}/channels/${dmChannelId}/messages`,
+    { content },
+    { headers: botHeaders() },
+  );
+}
