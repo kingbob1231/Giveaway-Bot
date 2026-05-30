@@ -16,7 +16,7 @@ import {
   sendMessage,
 } from "../lib/discordRest";
 import { logger } from "../lib/logger";
-import { searchFragment, type FragmentType, type FragmentFilter } from "../lib/fragment";
+import { searchFragment, getTonUsdPrice, type FragmentType, type FragmentFilter } from "../lib/fragment";
 
 const router = Router();
 
@@ -125,7 +125,7 @@ function handleCommand(interaction: any, res: any) {
 
   // /fragment — top-level command (no subcommands)
   if (commandName === "fragment") {
-    res.json({ type: ResponseType.DEFERRED_CHANNEL_MESSAGE, data: { flags: MessageFlags.EPHEMERAL } });
+    res.json({ type: ResponseType.DEFERRED_CHANNEL_MESSAGE });
     setImmediate(() =>
       handleFragment(interaction, interaction.data?.options ?? []).catch((err) =>
         logger.error({ err }, "handleFragment async error"),
@@ -656,6 +656,12 @@ const TYPE_LABELS: Record<string, string> = {
   gifts: "Gifts",
 };
 
+const FRAGMENT_THUMBNAIL = "https://fragment.com/apple-touch-icon.png";
+
+async function replyPublic(token: string, content: string) {
+  await editInteractionResponse(APPLICATION_ID, token, { content });
+}
+
 async function handleFragment(interaction: any, options: any[]) {
   const token: string = interaction.token;
   const query: string = getOptionValue(options, "query") ?? "";
@@ -664,34 +670,60 @@ async function handleFragment(interaction: any, options: any[]) {
   const filter = (rawFilter === "available" ? "" : rawFilter) as FragmentFilter;
 
   try {
-    const items = await searchFragment(query, type, filter);
+    const [items, tonUsd] = await Promise.all([
+      searchFragment(query, type, filter),
+      getTonUsdPrice(),
+    ]);
 
     if (items.length === 0) {
-      await replyEphemeral(token, `No results found for **${query}** (${TYPE_LABELS[type]}, ${FILTER_LABELS[filter] ?? filter}).`);
+      await replyPublic(token, `No results found for **${query}** (${TYPE_LABELS[type]}, ${FILTER_LABELS[filter] ?? filter}).`);
       return;
     }
 
     const lines = items.map((item) => {
-      const price = item.priceTon ? `**${item.priceTon} TON**` : "";
-      const extra = item.extra ? ` — ${item.extra}` : "";
-      return `[${item.name}](${item.url}) ${price}${extra}`;
+      // Format name: usernames get a @mention-style display
+      const displayName = type === "usernames" ? `**@${item.name}**` : `**${item.name}**`;
+
+      // Price: show TON + USD if available
+      let priceStr = "";
+      if (item.priceTon) {
+        const tonNum = parseFloat(item.priceTon.replace(/[^0-9.]/g, ""));
+        if (tonUsd && !isNaN(tonNum)) {
+          const usd = (tonNum * tonUsd).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+          priceStr = `\`${item.priceTon} TON\` ≈ **${usd}**`;
+        } else {
+          priceStr = `\`${item.priceTon} TON\``;
+        }
+      }
+
+      // Status/owner line
+      const statusStr = item.extra ? `*${item.extra}*` : (filter === "sold" ? "*Sold*" : "*Available*");
+
+      const parts = [`[${displayName}](${item.url})`];
+      if (priceStr) parts.push(priceStr);
+      parts.push(statusStr);
+      return parts.join(" — ");
     });
+
+    const filterLabel = (FILTER_LABELS[filter] ?? filter) || "Available";
+    const searchUrl = `https://fragment.com/${type === "usernames" ? "" : type}?query=${encodeURIComponent(query)}${filter ? `&filter=${filter}` : ""}`;
+    const tonPriceFooter = tonUsd ? ` • TON = $${tonUsd.toFixed(2)}` : "";
 
     await editInteractionResponse(APPLICATION_ID, token, {
       embeds: [
         {
           color: 0x0088cc,
-          title: `🔍 Fragment — ${TYPE_LABELS[type]} "${query}" (${(FILTER_LABELS[filter] ?? filter) || "Available"})`,
-          description: lines.join("\n"),
-          footer: { text: `Showing top ${items.length} results • fragment.com` },
-          url: `https://fragment.com/${type === "usernames" ? "" : type}?query=${encodeURIComponent(query)}${filter ? `&filter=${filter}` : ""}`,
+          title: `🔍 Fragment — ${TYPE_LABELS[type]}: "${query}" (${filterLabel})`,
+          description: lines.join("\n\n"),
+          thumbnail: { url: FRAGMENT_THUMBNAIL },
+          footer: { text: `Top ${items.length} results • fragment.com${tonPriceFooter}` },
+          url: searchUrl,
         },
       ],
-      flags: MessageFlags.EPHEMERAL,
     });
   } catch (err) {
     logger.error({ err, query, type, filter }, "Fragment search error");
-    await replyEphemeral(token, "❌ Failed to fetch Fragment results. The site may be temporarily unavailable.");
+    await replyPublic(token, "❌ Failed to fetch Fragment results. The site may be temporarily unavailable.");
   }
 }
 

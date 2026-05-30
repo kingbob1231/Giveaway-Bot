@@ -74,6 +74,19 @@ function parseItems(html: string): FragmentItem[] {
   return items;
 }
 
+/** Fetch current TON price in USD from CoinGecko. Returns null on failure. */
+export async function getTonUsdPrice(): Promise<number | null> {
+  try {
+    const res = await axios.get(
+      "https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd",
+      { timeout: 5000, headers: { "User-Agent": "Mozilla/5.0" } },
+    );
+    return (res.data as any)?.["the-open-network"]?.usd ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Search Fragment. Returns up to 10 items. */
 export async function searchFragment(
   query: string,

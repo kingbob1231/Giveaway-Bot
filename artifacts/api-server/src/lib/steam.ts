@@ -1,10 +1,10 @@
 import axios from "axios";
 import { logger } from "./logger";
 
-const STEAM_API_KEY = process.env.STEAM_API_KEY;
-
-if (!STEAM_API_KEY) {
-  throw new Error("STEAM_API_KEY environment variable is required");
+function getSteamApiKey(): string {
+  const key = process.env.STEAM_API_KEY;
+  if (!key) throw new Error("STEAM_API_KEY environment variable is required");
+  return key;
 }
 
 export async function resolveSteamId(profileUrl: string): Promise<string | null> {
@@ -21,7 +21,7 @@ export async function resolveSteamId(profileUrl: string): Promise<string | null>
     try {
       const res = await axios.get(
         "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/",
-        { params: { key: STEAM_API_KEY, vanityurl: vanity } },
+        { params: { key: getSteamApiKey(), vanityurl: vanity } },
       );
       if (res.data?.response?.success === 1) {
         return res.data.response.steamid as string;
@@ -61,7 +61,7 @@ export async function hasPlayedGameInLastMonth(
   try {
     const recentRes = await axios.get(
       "https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v1/",
-      { params: { key: STEAM_API_KEY, steamid: steamId, count: 0 } },
+      { params: { key: getSteamApiKey(), steamid: steamId, count: 0 } },
     );
     const recentGames: Array<{ appid: number; name: string; playtime_2weeks: number }> =
       recentRes.data?.response?.games ?? [];
@@ -84,7 +84,7 @@ export async function hasPlayedGameInLastMonth(
       "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/",
       {
         params: {
-          key: STEAM_API_KEY,
+          key: getSteamApiKey(),
           steamid: steamId,
           include_appinfo: 0,
           include_played_free_games: 1,
@@ -156,7 +156,7 @@ async function getProfileVisibility(steamId: string): Promise<{ isPublic: boolea
   try {
     const res = await axios.get(
       "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/",
-      { params: { key: STEAM_API_KEY, steamids: steamId } },
+      { params: { key: getSteamApiKey(), steamids: steamId } },
     );
     const player = res.data?.response?.players?.[0];
     // communityvisibilitystate: 1=Private, 2=FriendsOnly, 3=Public
@@ -172,7 +172,7 @@ export async function getSteamProfile(
   try {
     const res = await axios.get(
       "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/",
-      { params: { key: STEAM_API_KEY, steamids: steamId } },
+      { params: { key: getSteamApiKey(), steamids: steamId } },
     );
     const player = res.data?.response?.players?.[0];
     if (!player) return null;

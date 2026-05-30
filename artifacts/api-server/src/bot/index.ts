@@ -3,9 +3,9 @@
  * No Discord gateway connection needed — all interaction handling is via HTTP.
  */
 import { db } from "@workspace/db";
-import { giveawaysTable } from "@workspace/db";
-import { eq, and, gt, lte } from "drizzle-orm";
-import { endGiveaway } from "../lib/giveawayManager";
+import { giveawaysTable, giveawayEntriesTable } from "@workspace/db";
+import { eq, and, gt, lte, count } from "drizzle-orm";
+import { endGiveaway, tryUpdateGiveawayEmbed } from "../lib/giveawayManager";
 import { logger } from "../lib/logger";
 
 export async function startBot() {
@@ -37,6 +37,18 @@ export async function startBot() {
           logger.error({ err, giveawayId: g.id }, "Re-scheduled end failed"),
         );
       }, Math.max(msUntilEnd, 1000));
+
+      // Sync the embed entry count in case entries came in while server was down
+      try {
+        const [{ value: entryCount }] = await db
+          .select({ value: count() })
+          .from(giveawayEntriesTable)
+          .where(eq(giveawayEntriesTable.giveawayId, g.id));
+        await tryUpdateGiveawayEmbed(g, entryCount, false);
+        logger.info({ giveawayId: g.id, entryCount }, "Synced embed entry count on startup");
+      } catch (err) {
+        logger.warn({ err, giveawayId: g.id }, "Could not sync embed on startup");
+      }
     }
 
     logger.info(
