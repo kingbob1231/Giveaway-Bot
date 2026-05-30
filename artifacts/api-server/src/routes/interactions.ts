@@ -17,7 +17,7 @@ import {
   getInteractionMessageId,
 } from "../lib/discordRest";
 import { logger } from "../lib/logger";
-import { searchFragment, getTonUsdPrice, buildFragmentLines, type FragmentType, type FragmentFilter } from "../lib/fragment";
+import { searchFragment, getTonUsdPrice, buildFragmentEmbed, FILTER_LABELS as FRAGMENT_FILTER_LABELS, TYPE_LABELS as FRAGMENT_TYPE_LABELS, type FragmentType, type FragmentFilter } from "../lib/fragment";
 import { trackFragmentMessage } from "../lib/fragmentTracker";
 
 const router = Router();
@@ -679,21 +679,6 @@ async function handleSteamModal(interaction: any) {
 
 // ─── /fragment ────────────────────────────────────────────────────────────
 
-const FILTER_LABELS: Record<string, string> = {
-  "": "Available",
-  auction: "On Auction",
-  sale: "For Sale",
-  sold: "Sold",
-};
-
-const TYPE_LABELS: Record<string, string> = {
-  usernames: "Usernames",
-  numbers: "Numbers",
-  gifts: "Gifts",
-};
-
-const FRAGMENT_THUMBNAIL = "https://fragment.com/apple-touch-icon.png";
-
 async function replyPublic(token: string, content: string) {
   await editInteractionResponse(APPLICATION_ID, token, { content });
 }
@@ -712,29 +697,17 @@ async function handleFragment(interaction: any, options: any[]) {
     ]);
 
     if (items.length === 0) {
-      await replyPublic(token, `No results found for **${query}** (${TYPE_LABELS[type]}, ${FILTER_LABELS[filter] ?? filter}).`);
+      await replyPublic(
+        token,
+        `No results found for **${query}** on Fragment (${FRAGMENT_TYPE_LABELS[type]}, ${(FRAGMENT_FILTER_LABELS[filter] ?? filter) || "Any"}).`,
+      );
       return;
     }
 
-    const lines = buildFragmentLines(items, type, filter, tonUsd);
-    const filterLabel = (FILTER_LABELS[filter] ?? filter) || "Available";
-    const searchUrl = `https://fragment.com/${type === "usernames" ? "" : type}?query=${encodeURIComponent(query)}${filter ? `&filter=${filter}` : ""}`;
-    const tonPriceFooter = tonUsd ? ` • TON = $${tonUsd.toFixed(2)}` : "";
+    const embed = buildFragmentEmbed(items, type, filter, query, tonUsd, true);
+    await editInteractionResponse(APPLICATION_ID, token, { embeds: [embed] });
 
-    await editInteractionResponse(APPLICATION_ID, token, {
-      embeds: [
-        {
-          color: 0x0088cc,
-          title: `🔍 Fragment — ${TYPE_LABELS[type]}: "${query}" (${filterLabel})`,
-          description: lines.join("\n\n"),
-          thumbnail: { url: FRAGMENT_THUMBNAIL },
-          footer: { text: `Top ${items.length} results • fragment.com${tonPriceFooter} • updates every 3 min` },
-          url: searchUrl,
-        },
-      ],
-    });
-
-    // Register for live price updates — fetch message ID then track it
+    // Register for live price updates
     const channelId: string = interaction.channel_id ?? interaction.channel?.id ?? "";
     if (channelId) {
       const messageId = await getInteractionMessageId(APPLICATION_ID, token);

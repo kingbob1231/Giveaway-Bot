@@ -6,6 +6,21 @@ import axios from "axios";
 
 const BASE = "https://fragment.com";
 
+export const FRAGMENT_THUMBNAIL = "https://fragment.com/apple-touch-icon.png";
+
+export const FILTER_LABELS: Record<string, string> = {
+  "": "All Available",
+  auction: "On Auction",
+  sale: "For Sale",
+  sold: "Sold",
+};
+
+export const TYPE_LABELS: Record<string, string> = {
+  usernames: "Usernames",
+  numbers: "Numbers",
+  gifts: "Gifts",
+};
+
 export type FragmentFilter = "auction" | "sale" | "sold" | "";
 export type FragmentType = "usernames" | "numbers" | "gifts";
 
@@ -13,12 +28,49 @@ export interface FragmentItem {
   name: string;
   url: string;
   priceTon: string | null;
-  extra: string | null; // "ends in X" or "sold" or status text
+  extra: string | null;
 }
 
 interface Session {
   apiPath: string;
   cookie: string;
+}
+
+/** Parse Fragment relative time strings like "Ends in 2h 4m" → Unix seconds from now. */
+function parseRelativeTimeToUnix(text: string): number | null {
+  const lower = text.toLowerCase();
+  if (!lower.includes("end") && !lower.includes("left") && !/\d+[dhm]/.test(lower)) return null;
+
+  let seconds = 0;
+  const days = lower.match(/(\d+)\s*d/);
+  const hours = lower.match(/(\d+)\s*h/);
+  const minutes = lower.match(/(\d+)\s*m(?!s)/);
+
+  if (days) seconds += parseInt(days[1]) * 86400;
+  if (hours) seconds += parseInt(hours[1]) * 3600;
+  if (minutes) seconds += parseInt(minutes[1]) * 60;
+
+  return seconds > 0 ? Math.floor(Date.now() / 1000) + seconds : null;
+}
+
+/** Return a formatted status string with emoji, using Discord timestamps where possible. */
+function getStatusDisplay(extra: string | null, filter: FragmentFilter): string {
+  if (!extra) {
+    if (filter === "sold") return "💸 **Sold**";
+    if (filter === "auction") return "🔨 **On Auction**";
+    if (filter === "sale") return "🏷️ **For Sale**";
+    return "✅ **Available**";
+  }
+
+  const unix = parseRelativeTimeToUnix(extra);
+  if (unix) return `🔨 **Auction ends** <t:${unix}:R> (<t:${unix}:t>)`;
+
+  const lower = extra.toLowerCase();
+  if (lower.includes("sold")) return "💸 **Sold**";
+  if (lower.includes("sale")) return "🏷️ **For Sale**";
+  if (lower.includes("available") || lower.includes("buy now")) return "✅ **Available**";
+
+  return `📋 *${extra}*`;
 }
 
 /** Fetch a fresh session hash + cookie from Fragment's homepage. */
@@ -45,10 +97,8 @@ function parseItems(html: string): FragmentItem[] {
   for (const row of rows) {
     const content = row[1];
 
-    // Skip "show more" rows
     if (content.includes("js-load-more")) continue;
 
-    // Item URL + name
     const urlMatch = content.match(/href="(\/(?:username|number|gift)\/[^"]+)"/);
     const nameMatch = content.match(/class="table-cell-value tm-value">(.*?)<\/div>/);
     if (!urlMatch || !nameMatch) continue;
@@ -56,16 +106,14 @@ function parseItems(html: string): FragmentItem[] {
     const url = BASE + urlMatch[1];
     const name = nameMatch[1].replace(/&amp;/g, "&").replace(/<[^>]+>/g, "").trim();
 
-    // Price in TON (icon-ton class)
     const priceMatch = content.match(/icon-before icon-ton[^>]*>([^<]+)<\/div>/);
     const priceTon = priceMatch ? priceMatch[1].trim() : null;
 
-    // Third column — auction timer or status text
     const tds = [...content.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)];
     let extra: string | null = null;
     if (tds.length >= 3) {
       const thirdTd = tds[2][1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      if (thirdTd) extra = thirdTd.slice(0, 60);
+      if (thirdTd) extra = thirdTd.slice(0, 80);
     }
 
     items.push({ name, url, priceTon, extra });
@@ -87,15 +135,19 @@ export async function getTonUsdPrice(): Promise<number | null> {
   }
 }
 
-/** Build the description lines for a Fragment embed, converting TON → USD if rate is known. */
+/**
+ * Build rich description lines for a Fragment embed.
+ * Each entry is two lines: name link + price/status detail row.
+ */
 export function buildFragmentLines(
   items: FragmentItem[],
   type: FragmentType,
   filter: FragmentFilter,
   tonUsd: number | null,
 ): string[] {
-  return items.map((item) => {
-    const displayName = type === "usernames" ? `**@${item.name}**` : `**${item.name}**`;
+  return items.map((item, i) => {
+    const displayName = type === "usernames" ? `@${item.name}` : item.name;
+    const nameLink = `**${i + 1}.** [**${displayName}**](${item.url})`;
 
     let priceStr = "";
     if (item.priceTon) {
@@ -106,23 +158,46 @@ export function buildFragmentLines(
           currency: "USD",
           maximumFractionDigits: 0,
         });
-        priceStr = `\`${item.priceTon} TON\` ≈ **${usd}**`;
+        priceStr = `💎 \`${item.priceTon} TON\` ≈ **${usd}**`;
       } else {
-        priceStr = `\`${item.priceTon} TON\``;
+        priceStr = `💎 \`${item.priceTon} TON\``;
       }
     }
 
-    const statusStr = item.extra
-      ? `*${item.extra}*`
-      : filter === "sold"
-        ? "*Sold*"
-        : "*Available*";
+    const status = getStatusDisplay(item.extra, filter);
+    const detailParts = priceStr ? `${priceStr}  •  ${status}` : status;
 
-    const parts = [`[${displayName}](${item.url})`];
-    if (priceStr) parts.push(priceStr);
-    parts.push(statusStr);
-    return parts.join(" — ");
+    return `${nameLink}\n┗ ${detailParts}`;
   });
+}
+
+/** Build the complete Discord embed object for a Fragment search result. */
+export function buildFragmentEmbed(
+  items: FragmentItem[],
+  type: FragmentType,
+  filter: FragmentFilter,
+  query: string,
+  tonUsd: number | null,
+  live = false,
+) {
+  const lines = buildFragmentLines(items, type, filter, tonUsd);
+  const filterLabel = FILTER_LABELS[filter] ?? "All Available";
+  const searchUrl = `https://fragment.com/${type === "usernames" ? "" : type}?query=${encodeURIComponent(query)}${filter ? `&filter=${filter}` : ""}`;
+
+  const tonFooter = tonUsd ? `💹 TON = **$${tonUsd.toFixed(2)}**` : "";
+  const liveNote = live ? "  •  🔄 Live prices (3 min)" : "";
+  const footerParts = [`fragment.com`, filterLabel, tonFooter + liveNote].filter(Boolean);
+
+  return {
+    color: 0x0098ea,
+    author: { name: "Fragment.com Marketplace", icon_url: FRAGMENT_THUMBNAIL, url: "https://fragment.com" },
+    title: `🔍  ${TYPE_LABELS[type]}: "${query}"`,
+    description: lines.join("\n\n"),
+    thumbnail: { url: FRAGMENT_THUMBNAIL },
+    footer: { text: footerParts.join("  •  ") },
+    timestamp: new Date().toISOString(),
+    url: searchUrl,
+  };
 }
 
 /** Search Fragment. Returns up to 10 items. */
