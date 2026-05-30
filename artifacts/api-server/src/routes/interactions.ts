@@ -2,7 +2,7 @@ import { Router } from "express";
 import nacl from "tweetnacl";
 import { db } from "@workspace/db";
 import { giveawaysTable, giveawayEntriesTable } from "@workspace/db";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, desc } from "drizzle-orm";
 import { resolveSteamId, hasPlayedGameInLastMonth, getSteamProfile } from "../lib/steam";
 import {
   buildGiveawayEmbed,
@@ -498,24 +498,46 @@ async function handleGiveawayReroll(interaction: any, options: any[]) {
 
 async function handleGiveawayRefresh(interaction: any, options: any[]) {
   const token: string = interaction.token;
-  const id: number = getOptionValue(options, "id");
+  const idOption: number | null = getOptionValue(options, "id") ?? null;
 
-  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+  let giveaway: typeof giveawaysTable.$inferSelect | undefined;
 
-  if (!giveaway) {
-    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
-    return;
+  if (idOption != null) {
+    [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, idOption));
+    if (!giveaway) {
+      await replyEphemeral(token, `No giveaway found with ID **${idOption}**.`);
+      return;
+    }
+  } else {
+    const channelId: string = interaction.channel_id ?? interaction.channel?.id ?? "";
+    if (!channelId) {
+      await replyEphemeral(token, "❌ Could not determine the current channel. Please provide a giveaway ID.");
+      return;
+    }
+    [giveaway] = await db
+      .select()
+      .from(giveawaysTable)
+      .where(and(eq(giveawaysTable.channelId, channelId), eq(giveawaysTable.ended, false)))
+      .orderBy(desc(giveawaysTable.id))
+      .limit(1);
+    if (!giveaway) {
+      await replyEphemeral(token, "No active giveaway found in this channel. Use `/giveaway refresh id:<id>` to target a specific one.");
+      return;
+    }
   }
 
   const [{ value: entryCount }] = await db
     .select({ value: count() })
     .from(giveawayEntriesTable)
-    .where(eq(giveawayEntriesTable.giveawayId, id));
+    .where(eq(giveawayEntriesTable.giveawayId, giveaway.id));
 
   await tryUpdateGiveawayEmbed(giveaway, entryCount, giveaway.ended, giveaway.winnerUserIds ?? []);
 
-  await replyEphemeral(token, `✅ Refreshed! Giveaway **${id}** (${giveaway.prize}) now shows **${entryCount}** ${entryCount === 1 ? "entry" : "entries"}.`);
-  logger.info({ giveawayId: id, entryCount }, "Giveaway embed manually refreshed");
+  await replyEphemeral(
+    token,
+    `✅ Refreshed! Giveaway **#${giveaway.id}** (${giveaway.prize}) now shows **${entryCount}** ${entryCount === 1 ? "entry" : "entries"}.`,
+  );
+  logger.info({ giveawayId: giveaway.id, entryCount }, "Giveaway embed manually refreshed");
 }
 
 // ─── Button click (Enter Giveaway) ────────────────────────────────────────

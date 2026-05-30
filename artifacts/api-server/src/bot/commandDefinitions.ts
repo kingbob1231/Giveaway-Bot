@@ -81,7 +81,7 @@ export const giveawayCommand = new SlashCommandBuilder()
       .setName("refresh")
       .setDescription("Manually refresh the entry count on a giveaway embed")
       .addIntegerOption((opt) =>
-        opt.setName("id").setDescription("Giveaway ID").setRequired(true),
+        opt.setName("id").setDescription("Giveaway ID — omit to auto-find the active giveaway in this channel").setRequired(false),
       ),
   )
   .setIntegrationTypes([0, 1])
