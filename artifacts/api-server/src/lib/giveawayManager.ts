@@ -15,6 +15,7 @@ export function buildGiveawayEmbed(
   entryCount: number,
   ended: boolean,
   winners: string[] = [],
+  giveawayId?: number,
 ) {
   const embed = new EmbedBuilder()
     .setColor(ended ? 0x95a5a6 : 0xf1c40f)
@@ -28,19 +29,21 @@ export function buildGiveawayEmbed(
       },
     );
 
+  const idSuffix = giveawayId !== undefined ? ` • ID: ${giveawayId}` : "";
+
   if (ended) {
     embed.addFields({
       name: "Winner(s)",
       value: winners.length > 0 ? winners.map((id) => `<@${id}>`).join(", ") : "No valid entries",
     });
-    embed.setFooter({ text: "This giveaway has ended" });
+    embed.setFooter({ text: `Giveaway ended${idSuffix}` });
   } else {
     embed.setDescription(
       "Click **Enter Giveaway** below to participate!\n" +
         "You will be asked for your Steam profile URL.\n\n" +
         "You must have played a game on Steam in the last 30 days to qualify.",
     );
-    embed.setFooter({ text: "Steam activity verified via Steam Web API" });
+    embed.setFooter({ text: `Steam activity verified via Steam Web API${idSuffix}` });
   }
 
   return embed.toJSON();
@@ -75,7 +78,7 @@ export async function tryUpdateGiveawayEmbed(
   if (!giveaway.interactionToken) return;
   if (!isTokenStillValid(giveaway.createdAt)) return;
 
-  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entryCount, ended, winners);
+  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entryCount, ended, winners, giveaway.id);
   const row = buildEnterButtonRow(ended);
 
   try {
@@ -139,7 +142,7 @@ export async function endGiveaway(giveawayId: number) {
   }
 
   // Token still valid — update the embed and post the announcement in-channel
-  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners);
+  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners, giveaway.id);
   const row = buildEnterButtonRow(true);
 
   try {

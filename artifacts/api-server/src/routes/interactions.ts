@@ -195,7 +195,7 @@ async function handleGiveawayStart(interaction: any, options: any[]) {
 
   logger.info({ giveawayId: giveaway.id, prize, endsAt }, "Giveaway created — posting embed");
 
-  const embed = buildGiveawayEmbed(prize, endsAt, 0, false);
+  const embed = buildGiveawayEmbed(prize, endsAt, 0, false, [], giveaway.id);
   const row = buildEnterButtonRow(false);
 
   // Edit the deferred response to show the giveaway embed
