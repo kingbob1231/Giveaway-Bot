@@ -2,7 +2,7 @@ import { EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from "disc
 import { db } from "@workspace/db";
 import { giveawaysTable, giveawayEntriesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { editInteractionResponse, sendInteractionFollowup, dmUser } from "./discordRest";
+import { editInteractionResponse, sendInteractionFollowup } from "./discordRest";
 import { logger } from "./logger";
 
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID ?? "";
@@ -129,21 +129,12 @@ export async function endGiveaway(giveawayId: number) {
       : `The giveaway for **${giveaway.prize}** ended with no valid entries.`;
 
   if (!tokenValid) {
-    // Token expired — DM the host so they always know who won
-    logger.warn({ giveawayId }, "Interaction token expired — DMing host with result");
-    const winnerText =
-      winners.length > 0
-        ? `Winners: ${winners.map((id) => `<@${id}>`).join(", ")}`
-        : "No valid entries were received.";
-    try {
-      await dmUser(
-        giveaway.hostUserId,
-        `⏰ Your giveaway **${giveaway.prize}** has ended!\n${winnerText}\n\n` +
-          `_(The in-channel announcement couldn't be posted because the giveaway ran longer than 15 minutes — a Discord limitation for User Apps.)_`,
-      );
-    } catch (err) {
-      logger.error({ err, giveawayId }, "Could not DM host with winner result");
-    }
+    // Interaction token has expired (giveaway lasted > 15 min) — Discord limitation for User Apps.
+    // Winners are saved in the DB; the host can retrieve them with /giveaway result <id>.
+    logger.info(
+      { giveawayId, winners },
+      "Giveaway ended — token expired, results saved to DB. Host should run /giveaway result to see winners.",
+    );
     return;
   }
 

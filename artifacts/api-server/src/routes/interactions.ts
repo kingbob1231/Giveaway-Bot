@@ -153,6 +153,16 @@ function handleCommand(interaction: any, res: any) {
     return;
   }
 
+  if (sub === "result") {
+    res.json({ type: ResponseType.DEFERRED_CHANNEL_MESSAGE, data: { flags: MessageFlags.EPHEMERAL } });
+    setImmediate(() =>
+      handleGiveawayResult(interaction, subcommand?.options ?? []).catch((err) =>
+        logger.error({ err }, "handleGiveawayResult async error"),
+      ),
+    );
+    return;
+  }
+
   res.json({ type: ResponseType.CHANNEL_MESSAGE, data: { content: "Unknown subcommand.", flags: MessageFlags.EPHEMERAL } });
 }
 
@@ -269,6 +279,59 @@ async function handleGiveawayList(interaction: any) {
 
   await editInteractionResponse(APPLICATION_ID, token, {
     embeds: [{ color: 0xf1c40f, title: "Active Giveaways", description: lines.join("\n\n") }],
+    flags: MessageFlags.EPHEMERAL,
+  });
+}
+
+// ─── /giveaway result ─────────────────────────────────────────────────────
+
+async function handleGiveawayResult(interaction: any, options: any[]) {
+  const token: string = interaction.token;
+  const id: number = getOptionValue(options, "id");
+
+  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+
+  if (!giveaway) {
+    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+    return;
+  }
+
+  if (!giveaway.ended) {
+    await replyEphemeral(
+      token,
+      `Giveaway **${id}** (${giveaway.prize}) is still running — ends <t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:R>.`,
+    );
+    return;
+  }
+
+  const winners = giveaway.winnerUserIds ?? [];
+  const entries = await db
+    .select()
+    .from(giveawayEntriesTable)
+    .where(eq(giveawayEntriesTable.giveawayId, id));
+
+  const winnerText =
+    winners.length > 0
+      ? winners.map((uid) => `<@${uid}>`).join(", ")
+      : "No valid entries were received.";
+
+  await editInteractionResponse(APPLICATION_ID, token, {
+    embeds: [
+      {
+        color: 0x2ecc71,
+        title: `🎉 Giveaway Result — ${giveaway.prize}`,
+        fields: [
+          { name: "Winner(s)", value: winnerText, inline: false },
+          { name: "Total Entries", value: String(entries.length), inline: true },
+          {
+            name: "Ended",
+            value: `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:f>`,
+            inline: true,
+          },
+        ],
+        footer: { text: `Giveaway ID: ${id} • Hosted by <@${giveaway.hostUserId}>` },
+      },
+    ],
     flags: MessageFlags.EPHEMERAL,
   });
 }

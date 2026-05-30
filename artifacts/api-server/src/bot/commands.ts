@@ -70,6 +70,14 @@ export const giveawayStartCommand = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub.setName("list").setDescription("List active giveaways in this channel"),
   )
+  .addSubcommand((sub) =>
+    sub
+      .setName("result")
+      .setDescription("Show the winner(s) of a completed giveaway")
+      .addIntegerOption((opt) =>
+        opt.setName("id").setDescription("Giveaway ID").setRequired(true),
+      ),
+  )
   .setIntegrationTypes([0, 1])
   .setContexts([0, 1, 2]);
 
