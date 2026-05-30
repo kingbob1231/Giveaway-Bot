@@ -218,327 +218,353 @@ function handleCommand(interaction: any, res: any) {
 
 async function handleGiveawayStart(interaction: any, options: any[]) {
   const token: string = interaction.token;
-  const channelId: string = interaction.channel_id ?? interaction.channel?.id;
-  const guildId: string | null = interaction.guild_id ?? null;
-  const user = getUser(interaction);
-
-  const prize: string = getOptionValue(options, "prize") ?? "Prize";
-  const days: number = getOptionValue(options, "days") ?? 0;
-  const hours: number = getOptionValue(options, "hours") ?? 0;
-  const minutes: number = getOptionValue(options, "minutes") ?? 0;
-  const winnersCount: number = getOptionValue(options, "winners") ?? 1;
-  const imageUrl: string | null = getOptionValue(options, "image") ?? null;
-  const totalMinutes = days * 24 * 60 + hours * 60 + minutes;
-
-  if (totalMinutes <= 0) {
-    await replyEphemeral(token, "Please specify a duration using `hours` and/or `minutes` (total must be > 0).");
-    return;
-  }
-
-  const endsAt = new Date(Date.now() + totalMinutes * 60 * 1000);
-
-  const [giveaway] = await db
-    .insert(giveawaysTable)
-    .values({ channelId, guildId, hostUserId: user.id, prize, winnersCount, imageUrl, endsAt, interactionToken: token })
-    .returning();
-
-  logger.info({ giveawayId: giveaway.id, prize, endsAt }, "Giveaway created — posting embed");
-
-  const embed = buildGiveawayEmbed(prize, endsAt, 0, false, [], giveaway.id, imageUrl);
-  const row = buildEnterButtonRow(false);
-
-  // Edit the deferred response to show the giveaway embed
-  await editInteractionResponse(APPLICATION_ID, token, {
-    embeds: [embed],
-    components: [row],
-  });
-
-  // Fetch the message ID so we can update it later
-  // The interaction original response URL lets us GET the message
-  const { default: axios } = await import("axios");
   try {
-    const msgRes = await axios.get(
-      `https://discord.com/api/v10/webhooks/${APPLICATION_ID}/${token}/messages/@original`,
-    );
-    const messageId: string = msgRes.data.id;
-    await db
-      .update(giveawaysTable)
-      .set({ messageId })
-      .where(eq(giveawaysTable.id, giveaway.id));
+    const channelId: string = interaction.channel_id ?? interaction.channel?.id;
+    const guildId: string | null = interaction.guild_id ?? null;
+    const user = getUser(interaction);
 
-    logger.info({ giveawayId: giveaway.id, messageId }, "Giveaway started");
+    const prize: string = getOptionValue(options, "prize") ?? "Prize";
+    const days: number = getOptionValue(options, "days") ?? 0;
+    const hours: number = getOptionValue(options, "hours") ?? 0;
+    const minutes: number = getOptionValue(options, "minutes") ?? 0;
+    const winnersCount: number = getOptionValue(options, "winners") ?? 1;
+    const imageUrl: string | null = getOptionValue(options, "image") ?? null;
+    const totalMinutes = days * 24 * 60 + hours * 60 + minutes;
+
+    if (totalMinutes <= 0) {
+      await replyEphemeral(token, "Please specify a duration using `hours` and/or `minutes` (total must be > 0).");
+      return;
+    }
+
+    const endsAt = new Date(Date.now() + totalMinutes * 60 * 1000);
+
+    const [giveaway] = await db
+      .insert(giveawaysTable)
+      .values({ channelId, guildId, hostUserId: user.id, prize, winnersCount, imageUrl, endsAt, interactionToken: token })
+      .returning();
+
+    logger.info({ giveawayId: giveaway.id, prize, endsAt }, "Giveaway created — posting embed");
+
+    const embed = buildGiveawayEmbed(prize, endsAt, 0, false, [], giveaway.id, imageUrl);
+    const row = buildEnterButtonRow(false);
+
+    await editInteractionResponse(APPLICATION_ID, token, {
+      embeds: [embed],
+      components: [row],
+    });
+
+    // Fetch the message ID so we can update the embed later via bot token
+    const messageId = await getInteractionMessageId(APPLICATION_ID, token);
+    if (messageId) {
+      await db
+        .update(giveawaysTable)
+        .set({ messageId })
+        .where(eq(giveawaysTable.id, giveaway.id));
+      logger.info({ giveawayId: giveaway.id, messageId }, "Giveaway started");
+    } else {
+      logger.warn({ giveawayId: giveaway.id }, "Could not fetch giveaway message ID");
+    }
+
+    // Schedule auto-end
+    const msUntilEnd = endsAt.getTime() - Date.now();
+    setTimeout(() => {
+      endGiveaway(giveaway.id).catch((err) =>
+        logger.error({ err, giveawayId: giveaway.id }, "Scheduled end failed"),
+      );
+    }, msUntilEnd);
   } catch (err) {
-    logger.warn({ err }, "Could not fetch giveaway message ID");
+    logger.error({ err }, "handleGiveawayStart error");
+    await replyEphemeral(token, "❌ Something went wrong while starting the giveaway. Please try again.").catch(() => {});
   }
-
-  // Schedule auto-end
-  const msUntilEnd = endsAt.getTime() - Date.now();
-  setTimeout(() => {
-    endGiveaway(giveaway.id).catch((err) =>
-      logger.error({ err, giveawayId: giveaway.id }, "Scheduled end failed"),
-    );
-  }, msUntilEnd);
 }
 
 // ─── /giveaway end ────────────────────────────────────────────────────────
 
 async function handleGiveawayEnd(interaction: any, options: any[]) {
   const token: string = interaction.token;
-  const user = getUser(interaction);
-  const id: number = getOptionValue(options, "id");
+  try {
+    const user = getUser(interaction);
+    const id: number = getOptionValue(options, "id");
 
-  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+    const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
 
-  if (!giveaway) {
-    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
-    return;
-  }
-  if (giveaway.ended) {
-    await replyEphemeral(token, `Giveaway **${id}** has already ended.`);
-    return;
-  }
-  if (giveaway.hostUserId !== user.id) {
-    await replyEphemeral(token, "Only the person who started this giveaway can end it early.");
-    return;
-  }
+    if (!giveaway) {
+      await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+      return;
+    }
+    if (giveaway.ended) {
+      await replyEphemeral(token, `Giveaway **${id}** has already ended.`);
+      return;
+    }
+    if (giveaway.hostUserId !== user.id) {
+      await replyEphemeral(token, "Only the person who started this giveaway can end it early.");
+      return;
+    }
 
-  await endGiveaway(id);
-  await replyEphemeral(token, `Giveaway **${id}** has been ended.`);
+    await endGiveaway(id);
+    await replyEphemeral(token, `Giveaway **${id}** has been ended.`);
+  } catch (err) {
+    logger.error({ err }, "handleGiveawayEnd error");
+    await replyEphemeral(token, "❌ Something went wrong while ending the giveaway. Please try again.").catch(() => {});
+  }
 }
 
 // ─── /giveaway list ───────────────────────────────────────────────────────
 
 async function handleGiveawayList(interaction: any) {
   const token: string = interaction.token;
-  const channelId: string = interaction.channel_id ?? interaction.channel?.id;
+  try {
+    const channelId: string = interaction.channel_id ?? interaction.channel?.id;
 
-  const active = await db
-    .select()
-    .from(giveawaysTable)
-    .where(and(eq(giveawaysTable.channelId, channelId), eq(giveawaysTable.ended, false)));
+    const active = await db
+      .select()
+      .from(giveawaysTable)
+      .where(and(eq(giveawaysTable.channelId, channelId), eq(giveawaysTable.ended, false)));
 
-  if (active.length === 0) {
-    await replyEphemeral(token, "No active giveaways in this channel.");
-    return;
+    if (active.length === 0) {
+      await replyEphemeral(token, "No active giveaways in this channel.");
+      return;
+    }
+
+    const lines = active.map(
+      (g) => `**ID ${g.id}** — ${g.prize}\nEnds <t:${Math.floor(g.endsAt.getTime() / 1000)}:R>`,
+    );
+
+    await editInteractionResponse(APPLICATION_ID, token, {
+      embeds: [{ color: 0xf1c40f, title: "Active Giveaways", description: lines.join("\n\n") }],
+      flags: MessageFlags.EPHEMERAL,
+    });
+  } catch (err) {
+    logger.error({ err }, "handleGiveawayList error");
+    await replyEphemeral(token, "❌ Something went wrong while listing giveaways. Please try again.").catch(() => {});
   }
-
-  const lines = active.map(
-    (g) => `**ID ${g.id}** — ${g.prize}\nEnds <t:${Math.floor(g.endsAt.getTime() / 1000)}:R>`,
-  );
-
-  await editInteractionResponse(APPLICATION_ID, token, {
-    embeds: [{ color: 0xf1c40f, title: "Active Giveaways", description: lines.join("\n\n") }],
-    flags: MessageFlags.EPHEMERAL,
-  });
 }
 
 // ─── /giveaway result ─────────────────────────────────────────────────────
 
 async function handleGiveawayResult(interaction: any, options: any[]) {
   const token: string = interaction.token;
-  const id: number = getOptionValue(options, "id");
+  try {
+    const id: number = getOptionValue(options, "id");
 
-  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+    const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
 
-  if (!giveaway) {
-    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
-    return;
+    if (!giveaway) {
+      await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+      return;
+    }
+
+    if (!giveaway.ended) {
+      await replyEphemeral(
+        token,
+        `Giveaway **${id}** (${giveaway.prize}) is still running — ends <t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:R>.`,
+      );
+      return;
+    }
+
+    const winners = giveaway.winnerUserIds ?? [];
+    const entries = await db
+      .select()
+      .from(giveawayEntriesTable)
+      .where(eq(giveawayEntriesTable.giveawayId, id));
+
+    const winnerText =
+      winners.length > 0
+        ? winners.map((uid) => `<@${uid}>`).join(", ")
+        : "No valid entries were received.";
+
+    await editInteractionResponse(APPLICATION_ID, token, {
+      embeds: [
+        {
+          color: 0x2ecc71,
+          title: `🎉 Giveaway Result — ${giveaway.prize}`,
+          fields: [
+            { name: "Winner(s)", value: winnerText, inline: false },
+            { name: "Total Entries", value: String(entries.length), inline: true },
+            {
+              name: "Ended",
+              value: `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:f>`,
+              inline: true,
+            },
+          ],
+          footer: { text: `Giveaway ID: ${id} • Hosted by <@${giveaway.hostUserId}>` },
+        },
+      ],
+      flags: MessageFlags.EPHEMERAL,
+    });
+  } catch (err) {
+    logger.error({ err }, "handleGiveawayResult error");
+    await replyEphemeral(token, "❌ Something went wrong while fetching the result. Please try again.").catch(() => {});
   }
-
-  if (!giveaway.ended) {
-    await replyEphemeral(
-      token,
-      `Giveaway **${id}** (${giveaway.prize}) is still running — ends <t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:R>.`,
-    );
-    return;
-  }
-
-  const winners = giveaway.winnerUserIds ?? [];
-  const entries = await db
-    .select()
-    .from(giveawayEntriesTable)
-    .where(eq(giveawayEntriesTable.giveawayId, id));
-
-  const winnerText =
-    winners.length > 0
-      ? winners.map((uid) => `<@${uid}>`).join(", ")
-      : "No valid entries were received.";
-
-  await editInteractionResponse(APPLICATION_ID, token, {
-    embeds: [
-      {
-        color: 0x2ecc71,
-        title: `🎉 Giveaway Result — ${giveaway.prize}`,
-        fields: [
-          { name: "Winner(s)", value: winnerText, inline: false },
-          { name: "Total Entries", value: String(entries.length), inline: true },
-          {
-            name: "Ended",
-            value: `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:f>`,
-            inline: true,
-          },
-        ],
-        footer: { text: `Giveaway ID: ${id} • Hosted by <@${giveaway.hostUserId}>` },
-      },
-    ],
-    flags: MessageFlags.EPHEMERAL,
-  });
 }
 
 // ─── /giveaway entries ────────────────────────────────────────────────────
 
 async function handleGiveawayEntries(interaction: any, options: any[]) {
   const token: string = interaction.token;
-  const id: number = getOptionValue(options, "id");
+  try {
+    const id: number = getOptionValue(options, "id");
 
-  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+    const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
 
-  if (!giveaway) {
-    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
-    return;
+    if (!giveaway) {
+      await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+      return;
+    }
+
+    const entries = await db
+      .select()
+      .from(giveawayEntriesTable)
+      .where(eq(giveawayEntriesTable.giveawayId, id));
+
+    if (entries.length === 0) {
+      await replyEphemeral(token, `No entries yet for giveaway **${id}** (${giveaway.prize}).`);
+      return;
+    }
+
+    const shown = entries.slice(0, 25);
+    const overflow = entries.length - shown.length;
+
+    const lines = shown.map(
+      (e, i) =>
+        `**${i + 1}.** <@${e.userId}> — [Steam](https://steamcommunity.com/profiles/${e.steamId}) \`${e.steamId}\``,
+    );
+
+    if (overflow > 0) lines.push(`…and **${overflow}** more`);
+
+    await editInteractionResponse(APPLICATION_ID, token, {
+      embeds: [
+        {
+          color: 0x3498db,
+          title: `📋 Entries — ${giveaway.prize}`,
+          description: lines.join("\n"),
+          fields: [
+            { name: "Total Entries", value: String(entries.length), inline: true },
+            { name: "Status", value: giveaway.ended ? "Ended" : "Active", inline: true },
+          ],
+          footer: { text: `Giveaway ID: ${id}` },
+        },
+      ],
+      flags: MessageFlags.EPHEMERAL,
+    });
+  } catch (err) {
+    logger.error({ err }, "handleGiveawayEntries error");
+    await replyEphemeral(token, "❌ Something went wrong while fetching entries. Please try again.").catch(() => {});
   }
-
-  const entries = await db
-    .select()
-    .from(giveawayEntriesTable)
-    .where(eq(giveawayEntriesTable.giveawayId, id));
-
-  if (entries.length === 0) {
-    await replyEphemeral(token, `No entries yet for giveaway **${id}** (${giveaway.prize}).`);
-    return;
-  }
-
-  // Show up to 25 entries — Discord embed field limit
-  const shown = entries.slice(0, 25);
-  const overflow = entries.length - shown.length;
-
-  const lines = shown.map(
-    (e, i) =>
-      `**${i + 1}.** <@${e.userId}> — [Steam](https://steamcommunity.com/profiles/${e.steamId}) \`${e.steamId}\``,
-  );
-
-  if (overflow > 0) lines.push(`…and **${overflow}** more`);
-
-  await editInteractionResponse(APPLICATION_ID, token, {
-    embeds: [
-      {
-        color: 0x3498db,
-        title: `📋 Entries — ${giveaway.prize}`,
-        description: lines.join("\n"),
-        fields: [
-          { name: "Total Entries", value: String(entries.length), inline: true },
-          { name: "Status", value: giveaway.ended ? "Ended" : "Active", inline: true },
-        ],
-        footer: { text: `Giveaway ID: ${id}` },
-      },
-    ],
-    flags: MessageFlags.EPHEMERAL,
-  });
 }
 
 // ─── /giveaway reroll ─────────────────────────────────────────────────────
 
 async function handleGiveawayReroll(interaction: any, options: any[]) {
   const token: string = interaction.token;
-  const user = getUser(interaction);
-  const id: number = getOptionValue(options, "id");
+  try {
+    const user = getUser(interaction);
+    const id: number = getOptionValue(options, "id");
 
-  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+    const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
 
-  if (!giveaway) {
-    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
-    return;
-  }
-  if (!giveaway.ended) {
-    await replyEphemeral(token, `Giveaway **${id}** is still active — end it first.`);
-    return;
-  }
-  if (giveaway.hostUserId !== user.id) {
-    await replyEphemeral(token, "Only the host of this giveaway can reroll it.");
-    return;
-  }
-
-  const entries = await db
-    .select()
-    .from(giveawayEntriesTable)
-    .where(eq(giveawayEntriesTable.giveawayId, id));
-
-  if (entries.length === 0) {
-    await replyEphemeral(token, `Giveaway **${id}** had no entries — nothing to reroll.`);
-    return;
-  }
-
-  // Prefer entries that weren't already winners; fall back to all entries
-  const previousWinners = new Set(giveaway.winnerUserIds ?? []);
-  const pool = entries.filter((e) => !previousWinners.has(e.userId));
-  const drawFrom = pool.length > 0 ? pool : entries;
-
-  const winner = drawFrom[Math.floor(Math.random() * drawFrom.length)];
-  const newWinners = [winner.userId];
-
-  await db
-    .update(giveawaysTable)
-    .set({ winnerUserIds: newWinners })
-    .where(eq(giveawaysTable.id, id));
-
-  const announcement = `🎲 **Reroll!** New winner for **${giveaway.prize}**: <@${winner.userId}> — congratulations!`;
-
-  if (giveaway.channelId) {
-    try {
-      await sendMessage(giveaway.channelId, { content: announcement });
-    } catch (err) {
-      logger.warn({ err, giveawayId: id }, "Could not post reroll announcement to channel");
+    if (!giveaway) {
+      await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+      return;
     }
-  }
+    if (!giveaway.ended) {
+      await replyEphemeral(token, `Giveaway **${id}** is still active — end it first.`);
+      return;
+    }
+    if (giveaway.hostUserId !== user.id) {
+      await replyEphemeral(token, "Only the host of this giveaway can reroll it.");
+      return;
+    }
 
-  await replyEphemeral(token, `✅ Rerolled! New winner: <@${winner.userId}> (\`${winner.username}\`)`);
-  logger.info({ giveawayId: id, newWinner: winner.userId }, "Giveaway rerolled");
+    const entries = await db
+      .select()
+      .from(giveawayEntriesTable)
+      .where(eq(giveawayEntriesTable.giveawayId, id));
+
+    if (entries.length === 0) {
+      await replyEphemeral(token, `Giveaway **${id}** had no entries — nothing to reroll.`);
+      return;
+    }
+
+    const previousWinners = new Set(giveaway.winnerUserIds ?? []);
+    const pool = entries.filter((e) => !previousWinners.has(e.userId));
+    const drawFrom = pool.length > 0 ? pool : entries;
+
+    const winner = drawFrom[Math.floor(Math.random() * drawFrom.length)];
+    const newWinners = [winner.userId];
+
+    await db
+      .update(giveawaysTable)
+      .set({ winnerUserIds: newWinners })
+      .where(eq(giveawaysTable.id, id));
+
+    const announcement = `🎲 **Reroll!** New winner for **${giveaway.prize}**: <@${winner.userId}> — congratulations!`;
+
+    if (giveaway.channelId) {
+      try {
+        await sendMessage(giveaway.channelId, { content: announcement });
+      } catch (err) {
+        logger.warn({ err, giveawayId: id }, "Could not post reroll announcement to channel");
+      }
+    }
+
+    await replyEphemeral(token, `✅ Rerolled! New winner: <@${winner.userId}> (\`${winner.username}\`)`);
+    logger.info({ giveawayId: id, newWinner: winner.userId }, "Giveaway rerolled");
+  } catch (err) {
+    logger.error({ err }, "handleGiveawayReroll error");
+    await replyEphemeral(token, "❌ Something went wrong during reroll. Please try again.").catch(() => {});
+  }
 }
 
 // ─── /giveaway refresh ────────────────────────────────────────────────────
 
 async function handleGiveawayRefresh(interaction: any, options: any[]) {
   const token: string = interaction.token;
-  const idOption: number | null = getOptionValue(options, "id") ?? null;
+  try {
+    const idOption: number | null = getOptionValue(options, "id") ?? null;
 
-  let giveaway: typeof giveawaysTable.$inferSelect | undefined;
+    let giveaway: typeof giveawaysTable.$inferSelect | undefined;
 
-  if (idOption != null) {
-    [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, idOption));
-    if (!giveaway) {
-      await replyEphemeral(token, `No giveaway found with ID **${idOption}**.`);
-      return;
+    if (idOption != null) {
+      [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, idOption));
+      if (!giveaway) {
+        await replyEphemeral(token, `No giveaway found with ID **${idOption}**.`);
+        return;
+      }
+    } else {
+      const channelId: string = interaction.channel_id ?? interaction.channel?.id ?? "";
+      if (!channelId) {
+        await replyEphemeral(token, "❌ Could not determine the current channel. Please provide a giveaway ID.");
+        return;
+      }
+      [giveaway] = await db
+        .select()
+        .from(giveawaysTable)
+        .where(and(eq(giveawaysTable.channelId, channelId), eq(giveawaysTable.ended, false)))
+        .orderBy(desc(giveawaysTable.id))
+        .limit(1);
+      if (!giveaway) {
+        await replyEphemeral(token, "No active giveaway found in this channel. Use `/giveaway refresh id:<id>` to target a specific one.");
+        return;
+      }
     }
-  } else {
-    const channelId: string = interaction.channel_id ?? interaction.channel?.id ?? "";
-    if (!channelId) {
-      await replyEphemeral(token, "❌ Could not determine the current channel. Please provide a giveaway ID.");
-      return;
-    }
-    [giveaway] = await db
-      .select()
-      .from(giveawaysTable)
-      .where(and(eq(giveawaysTable.channelId, channelId), eq(giveawaysTable.ended, false)))
-      .orderBy(desc(giveawaysTable.id))
-      .limit(1);
-    if (!giveaway) {
-      await replyEphemeral(token, "No active giveaway found in this channel. Use `/giveaway refresh id:<id>` to target a specific one.");
-      return;
-    }
+
+    const [{ value: entryCount }] = await db
+      .select({ value: count() })
+      .from(giveawayEntriesTable)
+      .where(eq(giveawayEntriesTable.giveawayId, giveaway.id));
+
+    await tryUpdateGiveawayEmbed(giveaway, entryCount, giveaway.ended, giveaway.winnerUserIds ?? []);
+
+    await replyEphemeral(
+      token,
+      `✅ Refreshed! Giveaway **#${giveaway.id}** (${giveaway.prize}) now shows **${entryCount}** ${entryCount === 1 ? "entry" : "entries"}.`,
+    );
+    logger.info({ giveawayId: giveaway.id, entryCount }, "Giveaway embed manually refreshed");
+  } catch (err) {
+    logger.error({ err }, "handleGiveawayRefresh error");
+    await replyEphemeral(token, "❌ Something went wrong while refreshing the giveaway. Please try again.").catch(() => {});
   }
-
-  const [{ value: entryCount }] = await db
-    .select({ value: count() })
-    .from(giveawayEntriesTable)
-    .where(eq(giveawayEntriesTable.giveawayId, giveaway.id));
-
-  await tryUpdateGiveawayEmbed(giveaway, entryCount, giveaway.ended, giveaway.winnerUserIds ?? []);
-
-  await replyEphemeral(
-    token,
-    `✅ Refreshed! Giveaway **#${giveaway.id}** (${giveaway.prize}) now shows **${entryCount}** ${entryCount === 1 ? "entry" : "entries"}.`,
-  );
-  logger.info({ giveawayId: giveaway.id, entryCount }, "Giveaway embed manually refreshed");
 }
 
 // ─── Button click (Enter Giveaway) ────────────────────────────────────────
@@ -592,6 +618,7 @@ function handleModal(interaction: any, res: any) {
 
 async function handleSteamModal(interaction: any) {
   const token: string = interaction.token;
+  try {
   const user = getUser(interaction);
 
   const match = interaction.data?.custom_id?.match(/^steam_modal_(.+)$/);
@@ -698,6 +725,10 @@ async function handleSteamModal(interaction: any) {
   );
 
   logger.info({ giveawayId: giveaway.id, userId: user.id, steamId }, "New giveaway entry");
+  } catch (err) {
+    logger.error({ err }, "handleSteamModal error");
+    await replyEphemeral(token, "❌ Something went wrong while processing your entry. Please try again.").catch(() => {});
+  }
 }
 
 // ─── /fragment ────────────────────────────────────────────────────────────
