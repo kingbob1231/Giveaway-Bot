@@ -87,6 +87,44 @@ export async function getTonUsdPrice(): Promise<number | null> {
   }
 }
 
+/** Build the description lines for a Fragment embed, converting TON → USD if rate is known. */
+export function buildFragmentLines(
+  items: FragmentItem[],
+  type: FragmentType,
+  filter: FragmentFilter,
+  tonUsd: number | null,
+): string[] {
+  return items.map((item) => {
+    const displayName = type === "usernames" ? `**@${item.name}**` : `**${item.name}**`;
+
+    let priceStr = "";
+    if (item.priceTon) {
+      const tonNum = parseFloat(item.priceTon.replace(/[^0-9.]/g, ""));
+      if (tonUsd && !isNaN(tonNum)) {
+        const usd = (tonNum * tonUsd).toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+          maximumFractionDigits: 0,
+        });
+        priceStr = `\`${item.priceTon} TON\` ≈ **${usd}**`;
+      } else {
+        priceStr = `\`${item.priceTon} TON\``;
+      }
+    }
+
+    const statusStr = item.extra
+      ? `*${item.extra}*`
+      : filter === "sold"
+        ? "*Sold*"
+        : "*Available*";
+
+    const parts = [`[${displayName}](${item.url})`];
+    if (priceStr) parts.push(priceStr);
+    parts.push(statusStr);
+    return parts.join(" — ");
+  });
+}
+
 /** Search Fragment. Returns up to 10 items. */
 export async function searchFragment(
   query: string,

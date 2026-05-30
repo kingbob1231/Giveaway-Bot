@@ -6,6 +6,7 @@ import { db } from "@workspace/db";
 import { giveawaysTable, giveawayEntriesTable } from "@workspace/db";
 import { eq, and, gt, lte, count } from "drizzle-orm";
 import { endGiveaway, tryUpdateGiveawayEmbed } from "../lib/giveawayManager";
+import { startFragmentTicker } from "../lib/fragmentTracker";
 import { logger } from "../lib/logger";
 
 export async function startBot() {
@@ -55,6 +56,8 @@ export async function startBot() {
       { expired: expired.length, rescheduled: active.length },
       "Giveaway scheduler ready",
     );
+
+    startFragmentTicker();
   } catch (err) {
     logger.error({ err }, "Failed to initialise giveaway scheduler");
   }

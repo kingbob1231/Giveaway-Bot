@@ -63,6 +63,25 @@ export async function sendInteractionFollowup(
 }
 
 /**
+ * Fetch the original deferred interaction response message and return its ID.
+ * Used to get the message ID so we can edit it later via bot token.
+ */
+export async function getInteractionMessageId(
+  applicationId: string,
+  interactionToken: string,
+): Promise<string | null> {
+  try {
+    const res = await axios.get(
+      `${BASE}/webhooks/${applicationId}/${interactionToken}/messages/@original`,
+      { headers: { "Content-Type": "application/json" } },
+    );
+    return (res.data?.id as string) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Open a DM channel with a user and send them a message.
  * Used as a fallback when the interaction webhook has expired (> 15 min giveaways).
  */

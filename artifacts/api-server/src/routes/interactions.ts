@@ -14,9 +14,11 @@ import {
   editInteractionResponse,
   sendInteractionFollowup,
   sendMessage,
+  getInteractionMessageId,
 } from "../lib/discordRest";
 import { logger } from "../lib/logger";
-import { searchFragment, getTonUsdPrice, type FragmentType, type FragmentFilter } from "../lib/fragment";
+import { searchFragment, getTonUsdPrice, buildFragmentLines, type FragmentType, type FragmentFilter } from "../lib/fragment";
+import { trackFragmentMessage } from "../lib/fragmentTracker";
 
 const router = Router();
 
@@ -193,6 +195,16 @@ function handleCommand(interaction: any, res: any) {
     setImmediate(() =>
       handleGiveawayReroll(interaction, subcommand?.options ?? []).catch((err) =>
         logger.error({ err }, "handleGiveawayReroll async error"),
+      ),
+    );
+    return;
+  }
+
+  if (sub === "refresh") {
+    res.json({ type: ResponseType.DEFERRED_CHANNEL_MESSAGE, data: { flags: MessageFlags.EPHEMERAL } });
+    setImmediate(() =>
+      handleGiveawayRefresh(interaction, subcommand?.options ?? []).catch((err) =>
+        logger.error({ err }, "handleGiveawayRefresh async error"),
       ),
     );
     return;
@@ -482,6 +494,30 @@ async function handleGiveawayReroll(interaction: any, options: any[]) {
   logger.info({ giveawayId: id, newWinner: winner.userId }, "Giveaway rerolled");
 }
 
+// ─── /giveaway refresh ────────────────────────────────────────────────────
+
+async function handleGiveawayRefresh(interaction: any, options: any[]) {
+  const token: string = interaction.token;
+  const id: number = getOptionValue(options, "id");
+
+  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+
+  if (!giveaway) {
+    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+    return;
+  }
+
+  const [{ value: entryCount }] = await db
+    .select({ value: count() })
+    .from(giveawayEntriesTable)
+    .where(eq(giveawayEntriesTable.giveawayId, id));
+
+  await tryUpdateGiveawayEmbed(giveaway, entryCount, giveaway.ended, giveaway.winnerUserIds ?? []);
+
+  await replyEphemeral(token, `✅ Refreshed! Giveaway **${id}** (${giveaway.prize}) now shows **${entryCount}** ${entryCount === 1 ? "entry" : "entries"}.`);
+  logger.info({ giveawayId: id, entryCount }, "Giveaway embed manually refreshed");
+}
+
 // ─── Button click (Enter Giveaway) ────────────────────────────────────────
 
 function handleComponent(interaction: any, res: any) {
@@ -680,31 +716,7 @@ async function handleFragment(interaction: any, options: any[]) {
       return;
     }
 
-    const lines = items.map((item) => {
-      // Format name: usernames get a @mention-style display
-      const displayName = type === "usernames" ? `**@${item.name}**` : `**${item.name}**`;
-
-      // Price: show TON + USD if available
-      let priceStr = "";
-      if (item.priceTon) {
-        const tonNum = parseFloat(item.priceTon.replace(/[^0-9.]/g, ""));
-        if (tonUsd && !isNaN(tonNum)) {
-          const usd = (tonNum * tonUsd).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-          priceStr = `\`${item.priceTon} TON\` ≈ **${usd}**`;
-        } else {
-          priceStr = `\`${item.priceTon} TON\``;
-        }
-      }
-
-      // Status/owner line
-      const statusStr = item.extra ? `*${item.extra}*` : (filter === "sold" ? "*Sold*" : "*Available*");
-
-      const parts = [`[${displayName}](${item.url})`];
-      if (priceStr) parts.push(priceStr);
-      parts.push(statusStr);
-      return parts.join(" — ");
-    });
-
+    const lines = buildFragmentLines(items, type, filter, tonUsd);
     const filterLabel = (FILTER_LABELS[filter] ?? filter) || "Available";
     const searchUrl = `https://fragment.com/${type === "usernames" ? "" : type}?query=${encodeURIComponent(query)}${filter ? `&filter=${filter}` : ""}`;
     const tonPriceFooter = tonUsd ? ` • TON = $${tonUsd.toFixed(2)}` : "";
@@ -716,11 +728,20 @@ async function handleFragment(interaction: any, options: any[]) {
           title: `🔍 Fragment — ${TYPE_LABELS[type]}: "${query}" (${filterLabel})`,
           description: lines.join("\n\n"),
           thumbnail: { url: FRAGMENT_THUMBNAIL },
-          footer: { text: `Top ${items.length} results • fragment.com${tonPriceFooter}` },
+          footer: { text: `Top ${items.length} results • fragment.com${tonPriceFooter} • updates every 3 min` },
           url: searchUrl,
         },
       ],
     });
+
+    // Register for live price updates — fetch message ID then track it
+    const channelId: string = interaction.channel_id ?? interaction.channel?.id ?? "";
+    if (channelId) {
+      const messageId = await getInteractionMessageId(APPLICATION_ID, token);
+      if (messageId) {
+        trackFragmentMessage(channelId, messageId, query, type, filter, items);
+      }
+    }
   } catch (err) {
     logger.error({ err, query, type, filter }, "Fragment search error");
     await replyPublic(token, "❌ Failed to fetch Fragment results. The site may be temporarily unavailable.");
