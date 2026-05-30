@@ -163,6 +163,16 @@ function handleCommand(interaction: any, res: any) {
     return;
   }
 
+  if (sub === "entries") {
+    res.json({ type: ResponseType.DEFERRED_CHANNEL_MESSAGE, data: { flags: MessageFlags.EPHEMERAL } });
+    setImmediate(() =>
+      handleGiveawayEntries(interaction, subcommand?.options ?? []).catch((err) =>
+        logger.error({ err }, "handleGiveawayEntries async error"),
+      ),
+    );
+    return;
+  }
+
   res.json({ type: ResponseType.CHANNEL_MESSAGE, data: { content: "Unknown subcommand.", flags: MessageFlags.EPHEMERAL } });
 }
 
@@ -331,6 +341,57 @@ async function handleGiveawayResult(interaction: any, options: any[]) {
           },
         ],
         footer: { text: `Giveaway ID: ${id} • Hosted by <@${giveaway.hostUserId}>` },
+      },
+    ],
+    flags: MessageFlags.EPHEMERAL,
+  });
+}
+
+// ─── /giveaway entries ────────────────────────────────────────────────────
+
+async function handleGiveawayEntries(interaction: any, options: any[]) {
+  const token: string = interaction.token;
+  const id: number = getOptionValue(options, "id");
+
+  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+
+  if (!giveaway) {
+    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+    return;
+  }
+
+  const entries = await db
+    .select()
+    .from(giveawayEntriesTable)
+    .where(eq(giveawayEntriesTable.giveawayId, id));
+
+  if (entries.length === 0) {
+    await replyEphemeral(token, `No entries yet for giveaway **${id}** (${giveaway.prize}).`);
+    return;
+  }
+
+  // Show up to 25 entries — Discord embed field limit
+  const shown = entries.slice(0, 25);
+  const overflow = entries.length - shown.length;
+
+  const lines = shown.map(
+    (e, i) =>
+      `**${i + 1}.** <@${e.userId}> — [Steam](https://steamcommunity.com/profiles/${e.steamId}) \`${e.steamId}\``,
+  );
+
+  if (overflow > 0) lines.push(`…and **${overflow}** more`);
+
+  await editInteractionResponse(APPLICATION_ID, token, {
+    embeds: [
+      {
+        color: 0x3498db,
+        title: `📋 Entries — ${giveaway.prize}`,
+        description: lines.join("\n"),
+        fields: [
+          { name: "Total Entries", value: String(entries.length), inline: true },
+          { name: "Status", value: giveaway.ended ? "Ended" : "Active", inline: true },
+        ],
+        footer: { text: `Giveaway ID: ${id}` },
       },
     ],
     flags: MessageFlags.EPHEMERAL,
