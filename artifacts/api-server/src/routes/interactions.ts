@@ -13,6 +13,7 @@ import {
 import {
   editInteractionResponse,
   sendInteractionFollowup,
+  sendMessage,
 } from "../lib/discordRest";
 import { logger } from "../lib/logger";
 import { searchFragment, type FragmentType, type FragmentFilter } from "../lib/fragment";
@@ -182,6 +183,16 @@ function handleCommand(interaction: any, res: any) {
     setImmediate(() =>
       handleGiveawayEntries(interaction, subcommand?.options ?? []).catch((err) =>
         logger.error({ err }, "handleGiveawayEntries async error"),
+      ),
+    );
+    return;
+  }
+
+  if (sub === "reroll") {
+    res.json({ type: ResponseType.DEFERRED_CHANNEL_MESSAGE, data: { flags: MessageFlags.EPHEMERAL } });
+    setImmediate(() =>
+      handleGiveawayReroll(interaction, subcommand?.options ?? []).catch((err) =>
+        logger.error({ err }, "handleGiveawayReroll async error"),
       ),
     );
     return;
@@ -410,6 +421,65 @@ async function handleGiveawayEntries(interaction: any, options: any[]) {
     ],
     flags: MessageFlags.EPHEMERAL,
   });
+}
+
+// ─── /giveaway reroll ─────────────────────────────────────────────────────
+
+async function handleGiveawayReroll(interaction: any, options: any[]) {
+  const token: string = interaction.token;
+  const user = getUser(interaction);
+  const id: number = getOptionValue(options, "id");
+
+  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, id));
+
+  if (!giveaway) {
+    await replyEphemeral(token, `No giveaway found with ID **${id}**.`);
+    return;
+  }
+  if (!giveaway.ended) {
+    await replyEphemeral(token, `Giveaway **${id}** is still active — end it first.`);
+    return;
+  }
+  if (giveaway.hostUserId !== user.id) {
+    await replyEphemeral(token, "Only the host of this giveaway can reroll it.");
+    return;
+  }
+
+  const entries = await db
+    .select()
+    .from(giveawayEntriesTable)
+    .where(eq(giveawayEntriesTable.giveawayId, id));
+
+  if (entries.length === 0) {
+    await replyEphemeral(token, `Giveaway **${id}** had no entries — nothing to reroll.`);
+    return;
+  }
+
+  // Prefer entries that weren't already winners; fall back to all entries
+  const previousWinners = new Set(giveaway.winnerUserIds ?? []);
+  const pool = entries.filter((e) => !previousWinners.has(e.userId));
+  const drawFrom = pool.length > 0 ? pool : entries;
+
+  const winner = drawFrom[Math.floor(Math.random() * drawFrom.length)];
+  const newWinners = [winner.userId];
+
+  await db
+    .update(giveawaysTable)
+    .set({ winnerUserIds: newWinners })
+    .where(eq(giveawaysTable.id, id));
+
+  const announcement = `🎲 **Reroll!** New winner for **${giveaway.prize}**: <@${winner.userId}> — congratulations!`;
+
+  if (giveaway.channelId) {
+    try {
+      await sendMessage(giveaway.channelId, { content: announcement });
+    } catch (err) {
+      logger.warn({ err, giveawayId: id }, "Could not post reroll announcement to channel");
+    }
+  }
+
+  await replyEphemeral(token, `✅ Rerolled! New winner: <@${winner.userId}> (\`${winner.username}\`)`);
+  logger.info({ giveawayId: id, newWinner: winner.userId }, "Giveaway rerolled");
 }
 
 // ─── Button click (Enter Giveaway) ────────────────────────────────────────

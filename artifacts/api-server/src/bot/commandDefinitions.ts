@@ -68,6 +68,14 @@ export const giveawayCommand = new SlashCommandBuilder()
         opt.setName("id").setDescription("Giveaway ID").setRequired(true),
       ),
   )
+  .addSubcommand((sub) =>
+    sub
+      .setName("reroll")
+      .setDescription("Pick a new winner for a completed giveaway")
+      .addIntegerOption((opt) =>
+        opt.setName("id").setDescription("Giveaway ID").setRequired(true),
+      ),
+  )
   .setIntegrationTypes([0, 1])
   .setContexts([0, 1, 2]);
 
