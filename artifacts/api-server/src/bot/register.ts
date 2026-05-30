@@ -6,7 +6,7 @@
  * so it works in servers, DMs, and group DMs.
  */
 import { REST, Routes } from "discord.js";
-import { giveawayStartCommand } from "./commands";
+import { giveawayCommand } from "./commandDefinitions";
 import { logger } from "../lib/logger";
 
 const token = process.env.DISCORD_TOKEN;
@@ -19,7 +19,7 @@ if (!token || !applicationId) {
 
 const rest = new REST({ version: "10" }).setToken(token);
 
-const commands = [giveawayStartCommand.toJSON()];
+const commands = [giveawayCommand.toJSON()];
 
 (async () => {
   try {
