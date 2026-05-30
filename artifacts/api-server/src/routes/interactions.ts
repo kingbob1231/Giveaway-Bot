@@ -15,6 +15,7 @@ import {
   sendInteractionFollowup,
 } from "../lib/discordRest";
 import { logger } from "../lib/logger";
+import { searchFragment, type FragmentType, type FragmentFilter } from "../lib/fragment";
 
 const router = Router();
 
@@ -119,6 +120,19 @@ router.post("/interactions", (req, res) => {
 // ─── Slash command router ──────────────────────────────────────────────────
 
 function handleCommand(interaction: any, res: any) {
+  const commandName: string = interaction.data?.name ?? "";
+
+  // /fragment — top-level command (no subcommands)
+  if (commandName === "fragment") {
+    res.json({ type: ResponseType.DEFERRED_CHANNEL_MESSAGE, data: { flags: MessageFlags.EPHEMERAL } });
+    setImmediate(() =>
+      handleFragment(interaction, interaction.data?.options ?? []).catch((err) =>
+        logger.error({ err }, "handleFragment async error"),
+      ),
+    );
+    return;
+  }
+
   const subcommand = interaction.data?.options?.[0];
   const sub: string = subcommand?.name ?? "";
 
@@ -555,6 +569,59 @@ async function handleSteamModal(interaction: any) {
   );
 
   logger.info({ giveawayId: giveaway.id, userId: user.id, steamId }, "New giveaway entry");
+}
+
+// ─── /fragment ────────────────────────────────────────────────────────────
+
+const FILTER_LABELS: Record<string, string> = {
+  "": "Available",
+  auction: "On Auction",
+  sale: "For Sale",
+  sold: "Sold",
+};
+
+const TYPE_LABELS: Record<string, string> = {
+  usernames: "Usernames",
+  numbers: "Numbers",
+  gifts: "Gifts",
+};
+
+async function handleFragment(interaction: any, options: any[]) {
+  const token: string = interaction.token;
+  const query: string = getOptionValue(options, "query") ?? "";
+  const type = (getOptionValue(options, "type") ?? "usernames") as FragmentType;
+  const filter = (getOptionValue(options, "filter") ?? "") as FragmentFilter;
+
+  try {
+    const items = await searchFragment(query, type, filter);
+
+    if (items.length === 0) {
+      await replyEphemeral(token, `No results found for **${query}** (${TYPE_LABELS[type]}, ${FILTER_LABELS[filter] ?? filter}).`);
+      return;
+    }
+
+    const lines = items.map((item) => {
+      const price = item.priceTon ? `**${item.priceTon} TON**` : "";
+      const extra = item.extra ? ` — ${item.extra}` : "";
+      return `[${item.name}](${item.url}) ${price}${extra}`;
+    });
+
+    await editInteractionResponse(APPLICATION_ID, token, {
+      embeds: [
+        {
+          color: 0x0088cc,
+          title: `🔍 Fragment — ${TYPE_LABELS[type]} "${query}" (${(FILTER_LABELS[filter] ?? filter) || "Available"})`,
+          description: lines.join("\n"),
+          footer: { text: `Showing top ${items.length} results • fragment.com` },
+          url: `https://fragment.com/${type === "usernames" ? "" : type}?query=${encodeURIComponent(query)}${filter ? `&filter=${filter}` : ""}`,
+        },
+      ],
+      flags: MessageFlags.EPHEMERAL,
+    });
+  } catch (err) {
+    logger.error({ err, query, type, filter }, "Fragment search error");
+    await replyEphemeral(token, "❌ Failed to fetch Fragment results. The site may be temporarily unavailable.");
+  }
 }
 
 export default router;

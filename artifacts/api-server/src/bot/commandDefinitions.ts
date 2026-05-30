@@ -70,3 +70,33 @@ export const giveawayCommand = new SlashCommandBuilder()
   )
   .setIntegrationTypes([0, 1])
   .setContexts([0, 1, 2]);
+
+export const fragmentCommand = new SlashCommandBuilder()
+  .setName("fragment")
+  .setDescription("Search Fragment.com auction house")
+  .addStringOption((opt) =>
+    opt.setName("query").setDescription("Username, number, or keyword to search").setRequired(true),
+  )
+  .addStringOption((opt) =>
+    opt
+      .setName("type")
+      .setDescription("What to search (default: usernames)")
+      .addChoices(
+        { name: "Usernames", value: "usernames" },
+        { name: "Numbers", value: "numbers" },
+        { name: "Gifts", value: "gifts" },
+      ),
+  )
+  .addStringOption((opt) =>
+    opt
+      .setName("filter")
+      .setDescription("Filter results (default: all available)")
+      .addChoices(
+        { name: "Available / Buy now", value: "" },
+        { name: "On auction", value: "auction" },
+        { name: "For sale", value: "sale" },
+        { name: "Sold", value: "sold" },
+      ),
+  )
+  .setIntegrationTypes([0, 1])
+  .setContexts([0, 1, 2]);
