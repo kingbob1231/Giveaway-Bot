@@ -92,7 +92,7 @@ export const fragmentCommand = new SlashCommandBuilder()
       .setName("filter")
       .setDescription("Filter results (default: all available)")
       .addChoices(
-        { name: "Available / Buy now", value: "" },
+        { name: "Available / Buy now", value: "available" },
         { name: "On auction", value: "auction" },
         { name: "For sale", value: "sale" },
         { name: "Sold", value: "sold" },

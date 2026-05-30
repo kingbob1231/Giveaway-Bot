@@ -590,7 +590,8 @@ async function handleFragment(interaction: any, options: any[]) {
   const token: string = interaction.token;
   const query: string = getOptionValue(options, "query") ?? "";
   const type = (getOptionValue(options, "type") ?? "usernames") as FragmentType;
-  const filter = (getOptionValue(options, "filter") ?? "") as FragmentFilter;
+  const rawFilter = getOptionValue(options, "filter") ?? "";
+  const filter = (rawFilter === "available" ? "" : rawFilter) as FragmentFilter;
 
   try {
     const items = await searchFragment(query, type, filter);
