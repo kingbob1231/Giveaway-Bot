@@ -33,6 +33,12 @@ export const giveawayCommand = new SlashCommandBuilder()
           .setDescription("Number of winners (default: 1)")
           .setMinValue(1)
           .setMaxValue(10),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("image")
+          .setDescription("URL of an image to display on the giveaway embed")
+          .setRequired(false),
       ),
   )
   .addSubcommand((sub) =>

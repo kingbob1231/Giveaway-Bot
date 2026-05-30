@@ -179,6 +179,7 @@ async function handleGiveawayStart(interaction: any, options: any[]) {
   const hours: number = getOptionValue(options, "hours") ?? 0;
   const minutes: number = getOptionValue(options, "minutes") ?? 0;
   const winnersCount: number = getOptionValue(options, "winners") ?? 1;
+  const imageUrl: string | null = getOptionValue(options, "image") ?? null;
   const totalMinutes = days * 24 * 60 + hours * 60 + minutes;
 
   if (totalMinutes <= 0) {
@@ -190,12 +191,12 @@ async function handleGiveawayStart(interaction: any, options: any[]) {
 
   const [giveaway] = await db
     .insert(giveawaysTable)
-    .values({ channelId, guildId, hostUserId: user.id, prize, winnersCount, endsAt, interactionToken: token })
+    .values({ channelId, guildId, hostUserId: user.id, prize, winnersCount, imageUrl, endsAt, interactionToken: token })
     .returning();
 
   logger.info({ giveawayId: giveaway.id, prize, endsAt }, "Giveaway created — posting embed");
 
-  const embed = buildGiveawayEmbed(prize, endsAt, 0, false, [], giveaway.id);
+  const embed = buildGiveawayEmbed(prize, endsAt, 0, false, [], giveaway.id, imageUrl);
   const row = buildEnterButtonRow(false);
 
   // Edit the deferred response to show the giveaway embed

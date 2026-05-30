@@ -16,6 +16,7 @@ export function buildGiveawayEmbed(
   ended: boolean,
   winners: string[] = [],
   giveawayId?: number,
+  imageUrl?: string | null,
 ) {
   const embed = new EmbedBuilder()
     .setColor(ended ? 0x95a5a6 : 0xf1c40f)
@@ -28,6 +29,8 @@ export function buildGiveawayEmbed(
         inline: true,
       },
     );
+
+  if (imageUrl) embed.setImage(imageUrl);
 
   const idSuffix = giveawayId !== undefined ? ` • ID: ${giveawayId}` : "";
 
@@ -78,7 +81,7 @@ export async function tryUpdateGiveawayEmbed(
   if (!giveaway.interactionToken) return;
   if (!isTokenStillValid(giveaway.createdAt)) return;
 
-  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entryCount, ended, winners, giveaway.id);
+  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entryCount, ended, winners, giveaway.id, giveaway.imageUrl);
   const row = buildEnterButtonRow(ended);
 
   try {
@@ -142,7 +145,7 @@ export async function endGiveaway(giveawayId: number) {
   }
 
   // Token still valid — update the embed and post the announcement in-channel
-  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners, giveaway.id);
+  const embed = buildGiveawayEmbed(giveaway.prize, giveaway.endsAt, entries.length, true, winners, giveaway.id, giveaway.imageUrl);
   const row = buildEnterButtonRow(true);
 
   try {

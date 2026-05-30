@@ -11,6 +11,7 @@ export const giveawaysTable = pgTable("giveaways", {
   hostUserId: text("host_user_id").notNull(),
   prize: text("prize").notNull(),
   winnersCount: integer("winners_count").notNull().default(1),
+  imageUrl: text("image_url"),
   endsAt: timestamp("ends_at").notNull(),
   ended: boolean("ended").notNull().default(false),
   winnerUserIds: text("winner_user_ids").array(),
